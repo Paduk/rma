@@ -24,7 +24,11 @@ UTILS_DIR = PROJECT_ROOT / "utils"
 if str(UTILS_DIR) not in sys.path:
     sys.path.insert(0, str(UTILS_DIR))
 
-from oneshot_qwen_prompt import build_oneshot_messages, render_chat_template
+from oneshot_qwen_prompt import (
+    build_api_str_from_candidates,
+    build_oneshot_messages,
+    render_chat_template,
+)
 from train_sentence_rewriter import (
     DEFAULT_LLAMA_CPP_DIR,
     DEFAULT_NUM_TRAIN_EPOCHS,
@@ -40,21 +44,32 @@ from train_sentence_rewriter import (
 )
 
 DEFAULT_MODEL_NAME = "Qwen/Qwen3-4B"
+PHI_MODEL_NAME = "microsoft/Phi-4-mini-instruct"
+LLAMA_MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
 DEFAULT_TRAIN_DIR = PROJECT_ROOT / "datasets" / "train"
 DEFAULT_ADDITIONAL_DIR = DEFAULT_TRAIN_DIR / "additional"
 PLANNING_EXTRA_FILE = "it2_NR_train.tsv"
 DEFAULT_OUTPUT_TAG = "oneshot-rma"
+ONESHOT_SYSTEM_PROMPT = (
+    "Given a conversation history, a user query, and a list of available tools, "
+    "first rewrite the query by resolving ambiguous references using the "
+    "conversation history. Then select the most appropriate tool and generate "
+    "its arguments. Return compact JSON only with keys "
+    "\"rewrited_query\", \"plan\", and \"arguments\". Always include all three "
+    "keys. The value of \"arguments\" must always be an object. If no tool "
+    "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}."
+)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train a Qwen-based one-shot RMA LoRA adapter."
+        description="Train a one-shot RMA LoRA adapter for Qwen, Phi-4, or Llama-3."
     )
     parser.add_argument(
         "--model_name",
         default=DEFAULT_MODEL_NAME,
-        help="Base Qwen model name to load from Hugging Face.",
+        help="Base model name to load from Hugging Face.",
     )
     parser.add_argument(
         "--output_root",
@@ -237,10 +252,23 @@ def resolve_path(path_value: str | Path) -> Path:
     return path.resolve()
 
 
-def ensure_qwen_model(model_name: str):
-    if "Qwen/" not in model_name:
+def is_qwen_model(model_name: str) -> bool:
+    return "Qwen/" in model_name
+
+
+def is_phi_model(model_name: str) -> bool:
+    return model_name == PHI_MODEL_NAME
+
+
+def is_llama_model(model_name: str) -> bool:
+    return model_name == LLAMA_MODEL_NAME
+
+
+def ensure_supported_model(model_name: str):
+    if not (is_qwen_model(model_name) or is_phi_model(model_name) or is_llama_model(model_name)):
         raise ValueError(
-            "train_oneshot_rma_qwen.py currently supports only Qwen-family models."
+            "train_oneshot_rma_qwen.py supports only Qwen-family models, "
+            "microsoft/Phi-4-mini-instruct, and meta-llama/Llama-3.2-3B-Instruct."
         )
 
 
@@ -324,6 +352,23 @@ def tokenize_with_labels(tokenizer, prompt: str, prompt_prefix: str, max_length:
     return input_ids, labels
 
 
+def build_llama_prompts(api_str: str, conversation_history: str, query: str, target_json: str):
+    user_content = (
+        f"Tools: {api_str}\n"
+        f"Conversation History: {conversation_history}\n"
+        f"User Query: {query}"
+    )
+    prompt_prefix = (
+        "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
+        f"{ONESHOT_SYSTEM_PROMPT}\n"
+        "<|eot_id|><|start_header_id|>user<|end_header_id|>\n"
+        f"{user_content}\n"
+        "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
+    )
+    prompt = f"{prompt_prefix}{target_json}<|eot_id|>\n"
+    return prompt_prefix, prompt
+
+
 def build_preprocess_fn(tokenizer, model_name: str, apis: Dict, max_length: int):
     def preprocess(example):
         candidates = parse_literal(
@@ -331,26 +376,35 @@ def build_preprocess_fn(tokenizer, model_name: str, apis: Dict, max_length: int)
             field_name="candidates",
             source_file=example.get("source_file"),
         )
+        api_str = build_api_str_from_candidates(candidates, apis)
         target_json = build_oneshot_target(example)
-        messages = build_oneshot_messages(
-            conversation_history=example["conversation_history"],
-            query=example["query"],
-            candidates=candidates,
-            apis=apis,
-        )
+        if is_llama_model(model_name):
+            prompt_prefix, prompt = build_llama_prompts(
+                api_str=api_str,
+                conversation_history=example["conversation_history"],
+                query=example["query"],
+                target_json=target_json,
+            )
+        else:
+            messages = build_oneshot_messages(
+                conversation_history=example["conversation_history"],
+                query=example["query"],
+                candidates=candidates,
+                apis=apis,
+            )
 
-        prompt_prefix = render_chat_template(
-            tokenizer=tokenizer,
-            messages=messages,
-            add_generation_prompt=True,
-            model_name=model_name,
-        )
-        prompt = render_chat_template(
-            tokenizer=tokenizer,
-            messages=messages + [{"role": "assistant", "content": target_json}],
-            add_generation_prompt=False,
-            model_name=model_name,
-        )
+            prompt_prefix = render_chat_template(
+                tokenizer=tokenizer,
+                messages=messages,
+                add_generation_prompt=True,
+                model_name=model_name,
+            )
+            prompt = render_chat_template(
+                tokenizer=tokenizer,
+                messages=messages + [{"role": "assistant", "content": target_json}],
+                add_generation_prompt=False,
+                model_name=model_name,
+            )
 
         input_ids, labels = tokenize_with_labels(
             tokenizer=tokenizer,
@@ -421,7 +475,7 @@ class DataCollatorForCausalLM:
 
 def main():
     args = parse_args()
-    ensure_qwen_model(args.model_name)
+    ensure_supported_model(args.model_name)
 
     train_dir = resolve_path(args.train_dir)
     additional_dir = resolve_path(args.additional_dir)
@@ -485,7 +539,7 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         cache_dir=str(cache_dir),
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     model.gradient_checkpointing_enable()
