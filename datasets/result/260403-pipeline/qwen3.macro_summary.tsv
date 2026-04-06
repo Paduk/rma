@@ -1,6 +1,0 @@
-turn	turn_macro	it2_nonNR_tc.tsv	it3_complex_1_tc.tsv	it3_nonNR_tc.tsv	it4_complex_1_tc.tsv	it4_complex_2_tc.tsv	it4_nonNR_tc.tsv	it5_complex_1_tc.tsv	it5_complex_2_tc.tsv	it5_complex_3_tc.tsv	it5_nonNR_tc.tsv	weighted_macro_curriculum_reverse
-2	80.10	80.10										80.10
-3	72.00		65.26	75.68								72.55
-4	65.52				53.37	56.47	78.65					66.94
-5	50.24							41.33	37.37	42.71	73.05	53.64
-TOTAL	67.22											68.31
