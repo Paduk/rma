@@ -68,7 +68,7 @@ def extract_json_from_markdown(text):
 
 # Ollama API 호출 함수
 #def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11434'):
-def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11436'): # qwen3
+def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11435'): # qwen3
     response = requests.post(
         f"{host}/api/generate",
         json={
@@ -335,6 +335,11 @@ def main(out_file):
             "prompt_template": SFT_HISTORY_INFERENCE_QWEN3,
             "prompt_mode": "base",
         },
+        "new-base-phi4": {
+            "model_name": "phi4-phi-history-1st:latest",
+            "prompt_template": SFT_HISTORY_INFERENCE_PHI4,
+            "prompt_mode": "base",
+        }
     }
 
     test_type = args.t

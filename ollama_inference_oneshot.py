@@ -16,12 +16,16 @@ UTILS_DIR = PROJECT_ROOT / "utils"
 if str(UTILS_DIR) not in sys.path:
     sys.path.insert(0, str(UTILS_DIR))
 
-from oneshot_qwen_prompt import build_oneshot_messages, render_chat_template
+from oneshot_qwen_prompt import (
+    build_oneshot_messages,
+    render_chat_template,
+    resolve_prompt_tokenizer_name,
+)
 
 DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
 DEFAULT_HOST = "http://localhost:11436"
 DEFAULT_MODEL_NAME = "qwen3-oneshot:latest"
-DEFAULT_PROMPT_TOKENIZER_NAME = "Qwen/Qwen3-4B"
+DEFAULT_PROMPT_TOKENIZER_NAME = None
 """
 python3 /home/hj153lee/RMA/ollama_inference_oneshot.py \
 --model_name qwen3-oneshot:latest \
@@ -32,7 +36,7 @@ python3 /home/hj153lee/RMA/ollama_inference_oneshot.py \
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Evaluate one-shot Qwen RMA models via Ollama."
+        description="Evaluate one-shot RMA models via Ollama with model-matched chat templates."
     )
     parser.add_argument(
         "--model_name",
@@ -52,7 +56,7 @@ def parse_args():
     parser.add_argument(
         "--prompt_tokenizer_name",
         default=DEFAULT_PROMPT_TOKENIZER_NAME,
-        help="HF tokenizer used to render the Qwen chat template prompt.",
+        help="HF tokenizer used to render the chat template. If omitted, infer it from --model_name.",
     )
     parser.add_argument(
         "--test_key",
@@ -250,7 +254,7 @@ def load_prompt_tokenizer(model_name: str):
         from transformers import AutoTokenizer
     except ImportError as exc:
         raise RuntimeError(
-            "transformers is required to render the Qwen chat template during inference."
+            "transformers is required to render the chat template during inference."
         ) from exc
 
     return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
@@ -333,12 +337,16 @@ def parse_oneshot_response(raw_text: str):
 def main():
     args = parse_args()
     apis = read_simple_apis(Path(args.tools_path))
-    prompt_tokenizer = load_prompt_tokenizer(args.prompt_tokenizer_name)
+    prompt_tokenizer_name = resolve_prompt_tokenizer_name(
+        model_name=args.model_name,
+        prompt_tokenizer_name=args.prompt_tokenizer_name,
+    )
+    prompt_tokenizer = load_prompt_tokenizer(prompt_tokenizer_name)
     data_files = build_data_files()
     test_keys = parse_test_keys(args.test_key, data_files)
     print(f"model_name: {args.model_name}")
     print(f"host: {args.host}")
-    print(f"prompt_tokenizer_name: {args.prompt_tokenizer_name}")
+    print(f"prompt_tokenizer_name: {prompt_tokenizer_name}")
     print(f"test_keys: {test_keys}")
 
     all_results = []
@@ -368,7 +376,7 @@ def main():
                         example,
                         apis,
                         prompt_tokenizer=prompt_tokenizer,
-                        prompt_model_name=args.prompt_tokenizer_name,
+                        prompt_model_name=prompt_tokenizer_name,
                     )
                     if not printed_first_prompt:
                         print("first_inference_prompt:")

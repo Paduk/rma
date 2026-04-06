@@ -345,6 +345,12 @@ def get_model_configs(model_family):
             "plan_model_name": "qwen3-multitask:latest",
             "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
         },
+        "phi4-multitask": {
+            "model_name": "phi4-multitask:latest",
+            "prompt_template": SFT_RMA_INFERENCE_PHI4,
+            "plan_model_name": "phi4-multitask:latest",
+            "plan_prompt_template": SFT_REWRITE_INFERENCE_PHI4,
+        }
     }
     if model_family not in config:
         raise ValueError(
