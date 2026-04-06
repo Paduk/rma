@@ -1,0 +1,25 @@
+{"query": "Show me the message I sent to my client with the summary you asked for.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Can you show me the message I sent to jane.doe23@example.com?", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Show the photo message I sent to Cleo.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "List all my sent messages.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Show the MMS I sent to Sam.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "View sent emails", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "Schedule an event titled Home Inspection at 321 Oak St, Centerville, OH 45459 tomorrow from 10 AM to 11 AM with description Property inspection.", "answer": {"plan": "ACTION_INSERT_EVENT", "arguments": {"TITLE": "Home Inspection", "DESCRIPTION": "Property inspection", "EVENT_LOCATION": "321 Oak St, Centerville, OH 45459", "BEGIN_TIME": 1717322400000, "END_TIME": 1717326000000}}}
+{"query": "Create a call follow-up event at Washington, D.C. on Monday at 2 PM for 30 minutes titled Call Washington representative with description Discuss service options.", "answer": {"plan": "ACTION_INSERT_EVENT", "arguments": {"TITLE": "Call Washington representative", "DESCRIPTION": "Discuss service options", "EVENT_LOCATION": "Washington, D.C.", "BEGIN_TIME": 1717423200000, "END_TIME": 1717425000000}}}
+{"query": "Add a reminder to deliver package at 321 Oak St, Centerville, OH 45459 next Friday at noon titled Package Delivery with description Drop off the documents.", "answer": {"plan": "N/A", "arguments": {"reason": "Missing required parameter END_TIME"}}}
+{"query": "Plan a site visit at 55 Maple Ave, Boston, MA 02134, USA this Thursday at 9 AM titled Site Visit with description Check building condition.", "answer": {"plan": "N/A", "arguments": {"reason": "Missing required parameter END_TIME"}}}
+{"query": "Schedule a workshop at Washington, D.C. next Tuesday from 3 PM to 5 PM titled Policy Workshop with description Discuss legislative updates.", "answer": {"plan": "ACTION_INSERT_EVENT", "arguments": {"TITLE": "Policy Workshop", "DESCRIPTION": "Discuss legislative updates", "EVENT_LOCATION": "Washington, D.C.", "BEGIN_TIME": 1717513200000, "END_TIME": 1717520400000}}}
+{"query": "Set up a call with (555) 321-4321 tomorrow at 3 PM for 30 minutes", "answer": {"plan": "N/A", "arguments": {"reason": "Missing required parameters: TITLE and DESCRIPTION"}}}
+{"query": "Add a coffee meeting at Café Aroma at 58 Maple Avenue, Springfield Friday at 10 AM for one hour", "answer": {"plan": "N/A", "arguments": {"reason": "Missing required parameter DESCRIPTION"}}}
+{"query": "Schedule a trip to Washington, D.C. on July 1 at 9 AM lasting two hours", "answer": {"plan": "N/A", "arguments": {"reason": "Missing required parameter DESCRIPTION"}}}
+{"query": "Block out time to call (555) 321-4321 next Monday at 11 AM for 15 minutes", "answer": {"plan": "N/A", "arguments": {"reason": "Missing required parameters: TITLE and DESCRIPTION"}}}
+{"query": "Plan to send an email to spouse@example.net on Monday at 9 AM for 15 minutes", "answer": {"plan": "N/A", "arguments": {"reason": "Missing required parameters: TITLE and DESCRIPTION"}}}

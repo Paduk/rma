@@ -1,0 +1,139 @@
+{
+    "ACTION_CREATE_DOCUMENT": [
+        "mime_type",
+        "initial_name"
+    ],
+    "ACTION_EDIT_CONTACT": [
+        "contact_uri",
+        "contact_info"
+    ],
+    "ACTION_OPEN_DOCUMENT": [
+        "mime_types",
+        "allow_multiple"
+    ],
+    "ACTION_GET_CONTENT": [
+        "mime_type",
+        "allow_multiple"
+    ],
+    "ACTION_OPEN_CONTENT": [
+        "uri",
+        "mime_type"
+    ],
+    "ACTION_GET_RINGTONE": [],
+    "ACTION_IMAGE_CAPTURE": [
+        "file_uri"
+    ],
+    "ACTION_INSERT_CONTACT": [
+        "contact_info"
+    ],
+    "ACTION_INSERT_EVENT": [
+        "TITLE",
+        "DESCRIPTION",
+        "EVENT_LOCATION",
+        "BEGIN_TIME",
+        "END_TIME"
+    ],
+    "ACTION_PICK": [
+        "data_type"
+    ],
+    "ACTION_SET_ALARM": [
+        "EXTRA_HOUR",
+        "EXTRA_MINUTES",
+        "EXTRA_MESSAGE",
+        "EXTRA_DAYS",
+        "EXTRA_VIBRATE",
+        "EXTRA_RINGTONE",
+        "EXTRA_SKIP_UI"
+    ],
+    "ACTION_SET_TIMER": [
+        "duration",
+        "EXTRA_MESSAGE",
+        "EXTRA_SKIP_UI"
+    ],
+    "ACTION_SHOW_ALARMS": [],
+    "ACTION_VIDEO_CAPTURE": [
+        "file_uri"
+    ],
+    "ACTION_VIEW_CONTACT": [
+        "contact_uri"
+    ],
+    "INTENT_ACTION_STILL_IMAGE_CAMERA": [],
+    "INTENT_ACTION_VIDEO_CAMERA": [],
+    "dial": [
+        "phone_number"
+    ],
+    "get_contact_info": [
+        "contact_uri",
+        "info_type"
+    ],
+    "get_contact_info_from_uri": [
+        "data_uri"
+    ],
+    "open_settings": [
+        "setting_type"
+    ],
+    "search_location": [
+        "query"
+    ],
+    "send_email": [
+        "to",
+        "subject",
+        "body",
+        "attachments"
+    ],
+    "send_message": [
+        "to",
+        "message",
+        "attachments"
+    ],
+    "web_search": [
+        "query"
+    ],
+    "play_music": [
+        "track",
+        "app"
+    ],
+    "play_video": [
+        "video_uri",
+        "app"
+    ],
+    "launch_application": [
+        "application_name"
+    ],
+    "ACTION_EDIT_DOCUMENT": [
+        "document_uri",
+        "content"
+    ],
+    "ACTION_SET_RINGTONE": [
+        "ringtone_uri"
+    ],
+    "ACTION_EDIT_ALARM": [
+        "alarm_id",
+        "EXTRA_HOUR",
+        "EXTRA_MINUTES",
+        "EXTRA_MESSAGE",
+        "EXTRA_DAYS",
+        "EXTRA_VIBRATE",
+        "EXTRA_RINGTONE",
+        "EXTRA_SKIP_UI"
+    ],
+    "ACTION_EDIT_VIDEO": [
+        "video_uri",
+        "edit_options"
+    ],
+    "ACTION_NAVIGATE_TO_LOCATION": [
+        "location"
+    ],
+    "ACTION_VIEW_EVENT": [
+        "event_uri"
+    ],
+    "ACTION_SHOW_TIMERS": [],
+    "ACTION_VIEW_CALL_LOG": [],
+    "ACTION_VIEW_SENT_EMAILS": [],
+    "ACTION_VIEW_SENT_MESSAGES": [],
+    "ACTION_VIEW_WEB_HISTORY": [],
+    "ACTION_VIEW_PLAYLIST": [
+        "playlist_name"
+    ],
+    "ACTION_VIEW_RECENT_APPS": []
+}

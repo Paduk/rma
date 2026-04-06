@@ -1,0 +1,212 @@
+
+## Performance for it2_NR_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.95
+Arguments  Accuracy : 0.82
+All        Accuracy : 0.81
+Macro      Accuracy : 0.86
+----------------------------------------
+
+## Performance for it2_NR_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.96
+Arguments  Accuracy : 0.82
+All        Accuracy : 0.82
+Macro      Accuracy : 0.87
+----------------------------------------
+
+## Performance for it2_nonNR_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.76
+All        Accuracy : 0.76
+Macro      Accuracy : 0.83
+----------------------------------------
+
+## Performance for it3_nonNR_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.80
+All        Accuracy : 0.80
+Macro      Accuracy : 0.86
+----------------------------------------
+
+## Performance for it2_nonNR_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.96
+Arguments  Accuracy : 0.71
+All        Accuracy : 0.71
+Macro      Accuracy : 0.79
+----------------------------------------
+
+## Performance for it4_nonNR_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.78
+All        Accuracy : 0.78
+Macro      Accuracy : 0.85
+----------------------------------------
+
+## Performance for it5_nonNR_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.78
+All        Accuracy : 0.78
+Macro      Accuracy : 0.84
+----------------------------------------
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.79
+All        Accuracy : 0.78
+Macro      Accuracy : 0.85
+----------------------------------------
+
+## Performance for it3_nonNR_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.72
+All        Accuracy : 0.72
+Macro      Accuracy : 0.81
+----------------------------------------
+
+## Performance for it4_nonNR_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.99
+Arguments  Accuracy : 0.74
+All        Accuracy : 0.74
+Macro      Accuracy : 0.82
+----------------------------------------
+
+## Performance for it5_nonNR_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 1.00
+Arguments  Accuracy : 0.75
+All        Accuracy : 0.75
+Macro      Accuracy : 0.83
+----------------------------------------
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.74
+All        Accuracy : 0.74
+Macro      Accuracy : 0.82
+----------------------------------------
+
+## Performance for it3_complex_1_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.79
+All        Accuracy : 0.79
+Macro      Accuracy : 0.85
+----------------------------------------
+
+## Performance for it4_complex_1_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.85
+All        Accuracy : 0.85
+Macro      Accuracy : 0.89
+----------------------------------------
+
+## Performance for it4_complex_2_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.85
+All        Accuracy : 0.85
+Macro      Accuracy : 0.89
+----------------------------------------
+
+## Performance for it5_complex_1_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.85
+All        Accuracy : 0.85
+Macro      Accuracy : 0.89
+----------------------------------------
+
+## Performance for it5_complex_2_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.85
+All        Accuracy : 0.85
+Macro      Accuracy : 0.89
+----------------------------------------
+
+## Performance for it5_complex_3_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.82
+All        Accuracy : 0.82
+Macro      Accuracy : 0.87
+----------------------------------------
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.83
+All        Accuracy : 0.83
+Macro      Accuracy : 0.88
+----------------------------------------
+
+## Performance for it5_various_nonNR_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.96
+Arguments  Accuracy : 0.85
+All        Accuracy : 0.85
+Macro      Accuracy : 0.89
+----------------------------------------
+
+## Performance for it5_various_NR_tc.tsv, llama3-rewrite-1st:latest
+Plan       Accuracy : 0.96
+Arguments  Accuracy : 0.85
+All        Accuracy : 0.85
+Macro      Accuracy : 0.89
+----------------------------------------
+Plan       Accuracy : 0.96
+Arguments  Accuracy : 0.85
+All        Accuracy : 0.85
+Macro      Accuracy : 0.89
+----------------------------------------
+
+## Performance for it3_complex_1_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.59
+All        Accuracy : 0.59
+Macro      Accuracy : 0.72
+----------------------------------------
+
+## Performance for it4_complex_1_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.97
+Arguments  Accuracy : 0.65
+All        Accuracy : 0.65
+Macro      Accuracy : 0.76
+----------------------------------------
+
+## Performance for it4_complex_2_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.72
+All        Accuracy : 0.72
+Macro      Accuracy : 0.81
+----------------------------------------
+
+## Performance for it5_complex_1_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.96
+Arguments  Accuracy : 0.73
+All        Accuracy : 0.72
+Macro      Accuracy : 0.80
+----------------------------------------
+
+## Performance for it5_complex_2_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.76
+All        Accuracy : 0.76
+Macro      Accuracy : 0.83
+----------------------------------------
+
+## Performance for it5_complex_3_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.73
+All        Accuracy : 0.73
+Macro      Accuracy : 0.81
+----------------------------------------
+Plan       Accuracy : 0.98
+Arguments  Accuracy : 0.68
+All        Accuracy : 0.68
+Macro      Accuracy : 0.78
+----------------------------------------
+
+## Performance for it5_various_nonNR_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.94
+Arguments  Accuracy : 0.79
+All        Accuracy : 0.79
+Macro      Accuracy : 0.84
+----------------------------------------
+
+## Performance for it5_various_NR_tc.tsv, llama3-history-1st:latest
+Plan       Accuracy : 0.96
+Arguments  Accuracy : 0.83
+All        Accuracy : 0.82
+Macro      Accuracy : 0.87
+----------------------------------------
+Plan       Accuracy : 0.95
+Arguments  Accuracy : 0.81
+All        Accuracy : 0.80
+Macro      Accuracy : 0.86
+----------------------------------------

@@ -1,0 +1,21 @@
+<bos><start_of_turn>user
+[Task Instruction]
+여러분은 주어진 문제를 해결하기 위해 아래 주어진 후보 도구들 중 가장 적절한 도구를 선택하고, 그 선택 이유를 JSON 형식으로 출력해야 합니다.
+
+[Candidate Tools]
+- Tool A: (예시) 데이터 전처리 기능을 수행합니다.
+- Tool B: (예시) 통계 분석 및 결과 시각화를 수행합니다.
+- Tool C: (예시) 머신러닝 모델 학습을 위한 하이퍼파라미터 튜닝 도구입니다.
+
+[Conversation]
+아래는 지금까지의 대화 기록입니다.
+User: 문제의 상황 설명 및 추가 질문 내용...
+Model: 이전에 제공된 정보 혹은 초기 응답 내용...
+
+최종적으로, 아래와 같은 형태의 JSON 형식으로 답변을 제시하세요.
+예시: {"selected_tool": "Tool B", "explanation": "해당 문제 해결에 가장 적합한 도구로 판단됨"}
+
+<end_of_turn>
+<start_of_turn>model
+{"selected_tool": "Tool B", "explanation": "상황 설명과 대화 내역을 종합해볼 때, 통계 분석 및 결과 시각화가 요구되므로 Tool B가 가장 적절함"}
+<end_of_turn>

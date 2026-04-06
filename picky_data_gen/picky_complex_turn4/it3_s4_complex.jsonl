@@ -1,0 +1,10 @@
+{"query": "Show my sent messages.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Display the messages I've sent.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Can you list my recently sent texts?", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "View my sent text messages.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "What messages have I sent recently?", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Show my sent messages.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Display the texts I've sent recently.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "List all SMS messages I've sent.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "What have I sent via text lately?", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "View the recent outgoing messages.", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}

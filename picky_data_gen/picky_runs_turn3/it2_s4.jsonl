@@ -1,0 +1,27 @@
+{"query": "Open YouTube.", "answer": {"plan": "launch_application", "arguments": {"application_name": "YouTube"}}}
+{"query": "Launch Instagram.", "answer": {"plan": "launch_application", "arguments": {"application_name": "Instagram"}}}
+{"query": "Start Calendar.", "answer": {"plan": "launch_application", "arguments": {"application_name": "Calendar"}}}
+{"query": "Open Microsoft Word again.", "answer": {"plan": "launch_application", "arguments": {"application_name": "Microsoft Word"}}}
+{"query": "Open the Calculator app now.", "answer": {"plan": "launch_application", "arguments": {"application_name": "Calculator"}}}
+{"query": "Open Google Chrome.", "answer": {"plan": "launch_application", "arguments": {"application_name": "Google Chrome"}}}
+{"query": "Can you show me my sent emails?", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "Show me where the text files I emailed to editor@company.com are in my sent folder.", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "Check that the email sent to jane@domain.com with the MP3 file from my music library was saved in my sent folder.", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "Select the image captured with my phone's still image camera.", "answer": {"plan": "ACTION_GET_CONTENT", "arguments": {"mime_type": "image/*"}}}
+{"query": "Get the photo captured by the device's still image camera in normal photo shooting mode.", "answer": {"plan": "ACTION_GET_CONTENT", "arguments": {"mime_type": "image/*"}}}
+{"query": "Open the photo I just took with the still image camera.", "answer": {"plan": "ACTION_GET_CONTENT", "arguments": {"mime_type": "image/*"}}}
+{"query": "Pick the photo I just shot.", "answer": {"plan": "ACTION_GET_CONTENT", "arguments": {"mime_type": "image/*"}}}
+{"query": "Select all the photos that were just captured with the still image camera.", "answer": {"plan": "ACTION_GET_CONTENT", "arguments": {"mime_type": "image/*", "allow_multiple": true}}}
+{"query": "Select the image that was just frozen with the still image camera.", "answer": {"plan": "ACTION_GET_CONTENT", "arguments": {"mime_type": "image/*"}}}
+{"query": "Pick the interview video from my recordings", "answer": {"plan": "ACTION_GET_CONTENT", "arguments": {"mime_type": "video/*"}}}
+{"query": "Open content://temp/latest_shot.jpg for editing", "answer": {"plan": "ACTION_EDIT_VIDEO", "arguments": {"video_uri": "content://temp/latest_shot.jpg"}}}
+{"query": "Open content://temp/last_image.jpg in the video editor", "answer": {"plan": "ACTION_EDIT_VIDEO", "arguments": {"video_uri": "content://temp/last_image.jpg"}}}
+{"query": "Trim content://videos/clip_456.mp4 to the segment between 5 seconds and 1 minute", "answer": {"plan": "ACTION_EDIT_VIDEO", "arguments": {"video_uri": "content://videos/clip_456.mp4", "edit_options": {"start_time": 5000, "end_time": 60000}}}}
+{"query": "Trim content://videos/myclip1.mp4 to the first 15 seconds", "answer": {"plan": "ACTION_EDIT_VIDEO", "arguments": {"video_uri": "content://videos/myclip1.mp4", "edit_options": {"start_time": 0, "end_time": 15000}}}}
+{"query": "Mute content://example/uri", "answer": {"plan": "ACTION_EDIT_VIDEO", "arguments": {"video_uri": "content://example/uri", "edit_options": {"mute": true}}}}
+{"query": "Trim content://videos/capture_001.mp4 from 5 seconds to 25 seconds", "answer": {"plan": "ACTION_EDIT_VIDEO", "arguments": {"video_uri": "content://videos/capture_001.mp4", "edit_options": {"start_time": 5000, "end_time": 25000}}}}
+{"query": "Remove the first 5 seconds of content://media/external/video/134", "answer": {"plan": "ACTION_EDIT_VIDEO", "arguments": {"video_uri": "content://media/external/video/134", "edit_options": {"start_time": 5000}}}}
+{"query": "Add an event titled 'Call with Henry' with description 'Discuss project updates' tomorrow from 3 PM to 4 PM", "answer": {"plan": "ACTION_INSERT_EVENT", "arguments": {"TITLE": "Call with Henry", "DESCRIPTION": "Discuss project updates", "BEGIN_TIME": 1716217200000, "END_TIME": 1716220800000}}}
+{"query": "Add an event at 221B Baker St, Marylebone, London NW1 6XE, UK tomorrow from 3pm to 4pm titled Sherlock Discussion to review clues", "answer": {"plan": "ACTION_INSERT_EVENT", "arguments": {"TITLE": "Sherlock Discussion", "DESCRIPTION": "Review clues", "EVENT_LOCATION": "221B Baker St, Marylebone, London NW1 6XE, UK", "BEGIN_TIME": 1716217200000, "END_TIME": 1716220800000}}}
+{"query": "Create a Property Inspection at 55 Maple Ave, Jamaica Plain, Boston, MA 02130, USA on June 10 from 9am to 11am to check the building", "answer": {"plan": "ACTION_INSERT_EVENT", "arguments": {"TITLE": "Property Inspection", "DESCRIPTION": "Check the building", "EVENT_LOCATION": "55 Maple Ave, Jamaica Plain, Boston, MA 02130, USA", "BEGIN_TIME": 1717923600000, "END_TIME": 1717930800000}}}
+{"query": "Set up a kickoff meeting at 789 Executive Dr, Suite 200, San Francisco, CA 94105, USA next Monday from 1pm to 2pm titled Venture Kickoff with description Discuss partnership details", "answer": {"plan": "ACTION_INSERT_EVENT", "arguments": {"TITLE": "Venture Kickoff", "DESCRIPTION": "Discuss partnership details", "EVENT_LOCATION": "789 Executive Dr, Suite 200, San Francisco, CA 94105, USA", "BEGIN_TIME": 1716728400000, "END_TIME": 1716732000000}}}

@@ -1,0 +1,11 @@
+train/*-model-history
+train/*-model-rewrite
+trina/gemma3-*
+train/llama3*
+train/Phi-4-mini*
+train/phi4-mini*
+train/Qwen*
+logs/
+__pycache__/
+.ipynb_checkpoints
+*.pyc

@@ -1,0 +1,36 @@
+{"query": "Capture a photo and save it as content://user/photos/vacation.jpg", "answer": {"plan": "ACTION_IMAGE_CAPTURE", "arguments": {"file_uri": "content://user/photos/vacation.jpg"}}}
+{"query": "Go ahead and take the shot in still photo mode.", "answer": {"plan": "ACTION_IMAGE_CAPTURE", "arguments": {}}}
+{"query": "Grab one still image.", "answer": {"plan": "ACTION_IMAGE_CAPTURE", "arguments": {}}}
+{"query": "Snap the still image camera.", "answer": {"plan": "ACTION_IMAGE_CAPTURE", "arguments": {}}}
+{"query": "Shoot the still image camera.", "answer": {"plan": "ACTION_IMAGE_CAPTURE", "arguments": {}}}
+{"query": "Capture a photo with the camera in still image mode.", "answer": {"plan": "ACTION_IMAGE_CAPTURE", "arguments": {}}}
+{"query": "Display the email I just sent to work@example.com with the schedule for next week's meeting", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "Show me the emails with subject 'Review request' sent to webteam@example.com with attachment content://documents/webpage/index_copy.html.", "answer": {"plan": "ACTION_VIEW_SENT_EMAILS", "arguments": {}}}
+{"query": "Play content://videos/presentation_10-60s.mp4 so I can check the trim.", "answer": {"plan": "play_video", "arguments": {"video_uri": "content://videos/presentation_10-60s.mp4"}}}
+{"query": "Play content://media/videos/auto1_muted.mp4 so I can review the muted video.", "answer": {"plan": "play_video", "arguments": {"video_uri": "content://media/videos/auto1_muted.mp4"}}}
+{"query": "Play content://temp/IMG_20240605_153210_5-20s.mp4", "answer": {"plan": "play_video", "arguments": {"video_uri": "content://temp/IMG_20240605_153210_5-20s.mp4"}}}
+{"query": "Play content://temp/IMG_20240605_161230_start2s.mp4", "answer": {"plan": "play_video", "arguments": {"video_uri": "content://temp/IMG_20240605_161230_start2s.mp4"}}}
+{"query": "Play content://temp/video_captured_0-15s.mp4", "answer": {"plan": "play_video", "arguments": {"video_uri": "content://temp/video_captured_0-15s.mp4"}}}
+{"query": "Play content://videos/recording123_trimmed.mp4", "answer": {"plan": "play_video", "arguments": {"video_uri": "content://videos/recording123_trimmed.mp4"}}}
+{"query": "Play content://example/clip456_muted.mp4", "answer": {"plan": "play_video", "arguments": {"video_uri": "content://example/clip456_muted.mp4"}}}
+{"query": "Switch content://media/beat_drop.mp3 to my alarm ringtone", "answer": {"plan": "ACTION_SET_RINGTONE", "arguments": {"ringtone_uri": "content://media/beat_drop.mp3"}}}
+{"query": "Make content://media/ringtone_ocean.wav my default ringtone", "answer": {"plan": "ACTION_SET_RINGTONE", "arguments": {"ringtone_uri": "content://media/ringtone_ocean.wav"}}}
+{"query": "Use the ringtone selected using the ringtone picker as my notification ringtone", "answer": {"plan": "N/A", "arguments": {"reason": "Required parameter 'ringtone_uri' is missing from the query."}}}
+{"query": "Set content://media/alarm1.mp3 as my alarm ringtone", "answer": {"plan": "ACTION_SET_RINGTONE", "arguments": {"ringtone_uri": "content://media/alarm1.mp3"}}}
+{"query": "Apply the ringtone selected using the ringtone picker as the default ringtone", "answer": {"plan": "N/A", "arguments": {"reason": "Required parameter 'ringtone_uri' is missing from the query."}}}
+{"query": "Set the notification ringtone from the notification ringtone selector as my notification ringtone", "answer": {"plan": "N/A", "arguments": {"reason": "Required parameter 'ringtone_uri' is missing from the query."}}}
+{"query": "Can you show my recent browsing history?", "answer": {"plan": "ACTION_VIEW_WEB_HISTORY", "arguments": {}}}
+{"query": "Let me check which Wikipedia pages from the search results for 'Bohemian Rhapsody background site:wikipedia.org' I have visited.", "answer": {"plan": "ACTION_VIEW_WEB_HISTORY", "arguments": {}}}
+{"query": "What search results for 'subway map site:nyc.gov' have I browsed recently?", "answer": {"plan": "ACTION_VIEW_WEB_HISTORY", "arguments": {}}}
+{"query": "Could you pull up the search results for 'quant-ph: entanglement 2021-22 site:arxiv.org'?", "answer": {"plan": "ACTION_VIEW_WEB_HISTORY", "arguments": {}}}
+{"query": "Can you display the list of sent messages?", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Show the message saying 'Hi Jane, testing your new phone number. Can you confirm receipt?' that I sent to jane.doe23@example.com", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Show me the messages I have sent recently to Emma that include content://documents/NewTrack.mp3 with the text 'Listen to this new track and let me know your thoughts.'", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Could you pull up my sent message history to content://contacts/people/1033?", "answer": {"plan": "ACTION_VIEW_SENT_MESSAGES", "arguments": {}}}
+{"query": "Set an alarm for 12:00 AM using the ringtone https://example.org/ringtone.mp3 but disable vibration.", "answer": {"plan": "ACTION_SET_ALARM", "arguments": {"EXTRA_HOUR": 0, "EXTRA_MINUTES": 0, "EXTRA_RINGTONE": "https://example.org/ringtone.mp3", "EXTRA_VIBRATE": false}}}
+{"query": "Add an alarm for 6:15 AM with the label 'Doctor appointment' that repeats Monday through Friday and vibrates.", "answer": {"plan": "ACTION_SET_ALARM", "arguments": {"EXTRA_HOUR": 6, "EXTRA_MINUTES": 15, "EXTRA_MESSAGE": "Doctor appointment", "EXTRA_DAYS": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], "EXTRA_VIBRATE": true}}}
+{"query": "Set an 8:00 AM alarm with the notification ringtone selected from the notification ringtone selector on weekdays without vibration and skip the confirmation UI", "answer": {"plan": "ACTION_SET_ALARM", "arguments": {"EXTRA_HOUR": 8, "EXTRA_MINUTES": 0, "EXTRA_DAYS": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], "EXTRA_VIBRATE": false, "EXTRA_SKIP_UI": true}}}
+{"query": "Add an alarm for 2:45 PM labeled 'Coffee break' and skip the confirmation UI.", "answer": {"plan": "ACTION_SET_ALARM", "arguments": {"EXTRA_HOUR": 14, "EXTRA_MINUTES": 45, "EXTRA_MESSAGE": "Coffee break", "EXTRA_SKIP_UI": true}}}
+{"query": "Add an alarm at 6:00 AM on weekdays with vibration disabled.", "answer": {"plan": "ACTION_SET_ALARM", "arguments": {"EXTRA_HOUR": 6, "EXTRA_MINUTES": 0, "EXTRA_DAYS": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], "EXTRA_VIBRATE": false}}}
+{"query": "Create an alarm at 5:15 AM labeled 'Early workout', vibrate on, use the ringtone from the ringtone selector that was presented after requesting to pick another ringtone instead of content://media/beat_drop.mp3, and skip the UI", "answer": {"plan": "ACTION_SET_ALARM", "arguments": {"EXTRA_HOUR": 5, "EXTRA_MINUTES": 15, "EXTRA_MESSAGE": "Early workout", "EXTRA_VIBRATE": true, "EXTRA_SKIP_UI": true}}}
+{"query": "Set an alarm for 9:00 AM every day with the ringtone from the ringtone picker reopened and a 'Meeting' reminder", "answer": {"plan": "ACTION_SET_ALARM", "arguments": {"EXTRA_HOUR": 9, "EXTRA_MINUTES": 0, "EXTRA_MESSAGE": "Meeting", "EXTRA_DAYS": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]}}}

@@ -1,0 +1,5 @@
+{"id":"fact-ko","prompt":"한국의 수도가 어디인지 한 문장으로 답해줘."}
+{"id":"short-ko","prompt":"너 자신을 한국어로 두 문장 이내로 소개해줘."}
+{"id":"json-format","prompt":"다음 형식의 JSON만 출력해줘: {\"plan\":\"None\",\"arguments\":{}}"}
+{"id":"tool-style","prompt":"사용자 요청: 내일 서울 날씨 알려줘. 사용 가능한 도구가 없으면 JSON으로 {\"plan\":\"None\",\"arguments\":{}}만 출력해줘."}
+{"id":"reasoning-lite","prompt":"가벼운 추론 문제야. 12와 18의 최대공약수를 한 줄로 말해줘."}

@@ -1,0 +1,21 @@
+source_file	turn	turn_macro	it2_nonNR_tc.tsv	it3_complex_1_tc.tsv	it3_nonNR_tc.tsv	it4_complex_1_tc.tsv	it4_complex_2_tc.tsv	it4_nonNR_tc.tsv	it5_complex_1_tc.tsv	it5_complex_2_tc.tsv	it5_complex_3_tc.tsv	it5_nonNR_tc.tsv	weighted_macro_curriculum_reverse
+llama3-rewrite.tsv	2	81.97	81.97										81.97
+llama3-rewrite.tsv	3	82.95		82.23	82.07								82.12
+llama3-rewrite.tsv	4	82.38				82.89	81.33	80.85					81.40
+llama3-rewrite.tsv	5	77.58							81.26	79.03	76.37	72.22	75.73
+llama3-rewrite.tsv	TOTAL	82.19											80.31
+qwen2.5-rewrite.tsv	2	85.38	85.38										85.38
+qwen2.5-rewrite.tsv	3	84.52		85.06	83.02								83.63
+qwen2.5-rewrite.tsv	4	84.62				85.93	82.52	83.69					83.79
+qwen2.5-rewrite.tsv	5	79.32							82.86	79.82	80.10	73.16	77.54
+qwen2.5-rewrite.tsv	TOTAL	84.40											82.58
+scale-phi4-4b-rewrite.tsv	2	78.61	78.61										78.61
+scale-phi4-4b-rewrite.tsv	3	78.29		77.53	78.12								77.94
+scale-phi4-4b-rewrite.tsv	4	79.30				79.02	77.45	78.59					78.34
+scale-phi4-4b-rewrite.tsv	5	76.56							76.06	76.25	75.65	75.11	75.60
+scale-phi4-4b-rewrite.tsv	TOTAL	79.39											77.62
+scale-qwen3-4b-rewrite.tsv	2	82.72	82.72										82.72
+scale-qwen3-4b-rewrite.tsv	3	84.21		82.55	84.30								83.77
+scale-qwen3-4b-rewrite.tsv	4	84.96				84.32	84.34	83.52					83.93
+scale-qwen3-4b-rewrite.tsv	5	80.53							81.57	82.10	79.77	76.67	79.18
+scale-qwen3-4b-rewrite.tsv	TOTAL	84.54											82.40

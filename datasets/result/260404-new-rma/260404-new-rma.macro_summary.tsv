@@ -1,0 +1,21 @@
+source_file	turn	turn_macro	it2_nonNR_tc.tsv	it3_complex_1_tc.tsv	it3_nonNR_tc.tsv	it4_complex_1_tc.tsv	it4_complex_2_tc.tsv	it4_nonNR_tc.tsv	it5_complex_1_tc.tsv	it5_complex_2_tc.tsv	it5_complex_3_tc.tsv	it5_nonNR_tc.tsv	weighted_macro_curriculum_reverse
+llama3-pure-e4.tsv	2	73.09	73.09										73.09
+llama3-pure-e4.tsv	3	71.43		72.11	69.73								70.44
+llama3-pure-e4.tsv	4	70.00				70.93	67.60	68.69					68.81
+llama3-pure-e4.tsv	5	65.63							68.26	60.74	65.47	64.98	64.61
+llama3-pure-e4.tsv	TOTAL	71.02											69.24
+phi4-pure-e4.tsv	2	75.48	75.48										75.48
+phi4-pure-e4.tsv	3	72.67		72.92	71.35								71.83
+phi4-pure-e4.tsv	4	69.83				67.03	67.28	70.67					68.93
+phi4-pure-e4.tsv	5	65.55							62.66	61.24	66.73	66.29	65.05
+phi4-pure-e4.tsv	TOTAL	71.74											70.32
+qwen25-pure-e4.tsv	2	80.86	80.86										80.86
+qwen25-pure-e4.tsv	3	76.42		77.12	74.74								75.45
+qwen25-pure-e4.tsv	4	75.18				75.74	72.29	74.74					74.20
+qwen25-pure-e4.tsv	5	68.58							72.63	66.58	66.77	65.79	66.93
+qwen25-pure-e4.tsv	TOTAL	75.84											74.36
+qwen3-pure-e4.tsv	2	78.14	78.14										78.14
+qwen3-pure-e4.tsv	3	76.18		76.42	74.76								75.26
+qwen3-pure-e4.tsv	4	76.42				75.82	74.41	75.89					75.43
+qwen3-pure-e4.tsv	5	70.74							71.25	70.17	70.44	67.97	69.48
+qwen3-pure-e4.tsv	TOTAL	76.69											74.58

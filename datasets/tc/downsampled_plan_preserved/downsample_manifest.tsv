@@ -1,0 +1,10 @@
+file_name	turn	original_count	target_count	sampled_count	output_path
+it3_complex_1_tc.tsv	turn3	1547	250	250	datasets/tc/downsampled_plan_preserved/it3_complex_1_tc.tsv
+it3_nonNR_tc.tsv	turn3	348	250	250	datasets/tc/downsampled_plan_preserved/it3_nonNR_tc.tsv
+it4_complex_1_tc.tsv	turn4	1128	160	160	datasets/tc/downsampled_plan_preserved/it4_complex_1_tc.tsv
+it4_complex_2_tc.tsv	turn4	1228	160	160	datasets/tc/downsampled_plan_preserved/it4_complex_2_tc.tsv
+it4_nonNR_tc.tsv	turn4	346	160	160	datasets/tc/downsampled_plan_preserved/it4_nonNR_tc.tsv
+it5_complex_1_tc.tsv	turn5	552	120	120	datasets/tc/downsampled_plan_preserved/it5_complex_1_tc.tsv
+it5_complex_2_tc.tsv	turn5	728	120	120	datasets/tc/downsampled_plan_preserved/it5_complex_2_tc.tsv
+it5_complex_3_tc.tsv	turn5	987	120	120	datasets/tc/downsampled_plan_preserved/it5_complex_3_tc.tsv
+it5_nonNR_tc.tsv	turn5	219	120	120	datasets/tc/downsampled_plan_preserved/it5_nonNR_tc.tsv

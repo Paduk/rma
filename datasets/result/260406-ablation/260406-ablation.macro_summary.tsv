@@ -1,0 +1,16 @@
+source_file	turn	turn_macro	it2_nonNR_tc.tsv	it3_complex_1_tc.tsv	it3_nonNR_tc.tsv	it4_complex_1_tc.tsv	it4_complex_2_tc.tsv	it4_nonNR_tc.tsv	it5_complex_1_tc.tsv	it5_complex_2_tc.tsv	it5_complex_3_tc.tsv	it5_nonNR_tc.tsv	weighted_macro_curriculum_reverse
+qwen3-multitask.tsv	2	80.79	80.79										80.79
+qwen3-multitask.tsv	3	76.78		77.43	74.86								75.63
+qwen3-multitask.tsv	4	77.38				77.81	74.31	76.62					76.16
+qwen3-multitask.tsv	5	71.09							70.67	70.43	72.48	67.65	69.96
+qwen3-multitask.tsv	TOTAL	77.40											75.63
+qwen3-new-base.tsv	2	76.26	76.26										76.26
+qwen3-new-base.tsv	3	75.45		71.86	76.43								75.06
+qwen3-new-base.tsv	4	73.83				71.04	72.81	74.65					73.38
+qwen3-new-base.tsv	5	66.61							65.89	65.24	67.30	64.35	65.56
+qwen3-new-base.tsv	TOTAL	74.45											72.57
+qwen3-pure-e4.tsv	2	78.14	78.14										78.14
+qwen3-pure-e4.tsv	3	76.18		76.42	74.76								75.26
+qwen3-pure-e4.tsv	4	76.42				75.82	74.41	75.89					75.43
+qwen3-pure-e4.tsv	5	70.74							71.25	70.17	70.44	67.97	69.48
+qwen3-pure-e4.tsv	TOTAL	76.69											74.58
