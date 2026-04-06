@@ -140,108 +140,256 @@ Final evaluation files live under [`datasets/tc/`](/home/hj153lee/RMA/datasets/t
 
 ## Training
 
-Training scripts live under [`train/`](/home/hj153lee/RMA/train).
+Training scripts live under [`train/`](train/). The main entry points used in the recent experiments are the four scripts below.
 
-Planner training entry points:
+At a high level, the four training workflows are organized as follows:
 
-- [`train/train_llama.py`](/home/hj153lee/RMA/train/train_llama.py)
-- [`train/train_qwen.py`](/home/hj153lee/RMA/train/train_qwen.py)
-- [`train/train_phi.py`](/home/hj153lee/RMA/train/train_phi.py)
-- [`train/train_gemma.py`](/home/hj153lee/RMA/train/train_gemma.py)
+- `train/train_sentence_rewriter.py`: trains a rewrite-only adapter that maps `(conversation_history, query)` to `rewrited_query`
+- `train/train_legacy_integrated.py`: trains a planner-only adapter that predicts `plan` and `arguments`
+- `train/train_multitask_rma.py`: trains a shared adapter on both rewrite and planning objectives in a multitask setup
+- `train/train_oneshot_rma_qwen.py`: trains a Qwen one-shot adapter that emits `rewrited_query`, `plan`, and `arguments` in one generation
 
-RMA-oriented training entry points:
+### `train/train_sentence_rewriter.py`
 
-- [`train/train_rma_llama.py`](/home/hj153lee/RMA/train/train_rma_llama.py)
-- [`train/train_integrated_phi.py`](/home/hj153lee/RMA/train/train_integrated_phi.py)
+This script trains a LoRA adapter that rewrites a raw `(conversation_history, query)` pair into a normalized `rewrited_query`. That rewritten query is then used by the later planning and inference stages.
 
-Typical planner training example:
+It reads rewrite-style training data from:
 
-```bash
-cd train
-python3 train_llama.py
-```
+- `datasets/train/*.tsv`
+- `datasets/train/additional/*.tsv`
 
-Operational notes:
+Dataset selection is opinionated:
 
-- several training scripts contain model names and dataset paths directly in the file
-- for example, [`train/train_llama.py`](/home/hj153lee/RMA/train/train_llama.py) currently loads TSVs from `../datasets/train/`
-- the training scripts distinguish between `history` and `rewrite` style prompting
-- LoRA-based fine-tuning is used in the planner training scripts
-
-## Model Merge
-
-Merge adapter weights with a pretrained base model using [`train/model_merge.py`](/home/hj153lee/RMA/train/model_merge.py).
+- base files containing `_NR_` are excluded from the main rewrite set
+- additional files containing `complex` or `various_nonNR` are included
+- `datasets/train/it2_NR_train.tsv` is explicitly added as an extra file
 
 Example:
 
 ```bash
-cd train
-python3 model_merge.py --model qwen3 --t1 /path/to/lora/checkpoint --t2 /path/to/merged_model
+python3 train/train_sentence_rewriter.py \
+  --model_name "Qwen/Qwen2.5-3B-Instruct"
 ```
 
 Operational notes:
 
-- `--model` selects a hardcoded base-model path inside the script
-- `--t1` is the LoRA checkpoint path
-- `--t2` is the output directory for the merged model
-- training and inference may use different environments after merge
+- prompt template and LoRA target modules are selected automatically from `--model_name`
+- by default the script also postprocesses the trained adapter by merging weights, exporting GGUF, and registering an Ollama model
+- if you only want checkpoints and adapter weights, add `--skip_postprocess`
+- on a new machine, you will usually want to override the default `--output_root`
 
-## Inference
+### `train/train_legacy_integrated.py`
 
-### RMA / Base Inference
+This is the unified planner-training entry point that preserves the behavior of the older `train_qwen.py`, `train_phi.py`, and `train_llama.py` scripts. It trains a model to predict tool `plan` and `arguments` from either conversation history or a rewritten query.
 
-Available local inference entry points include:
+It reads planning data from:
 
-- [`ollama_inference.py`](/home/hj153lee/RMA/ollama_inference.py)
-- [`base_ollama_inference.py`](/home/hj153lee/RMA/base_ollama_inference.py)
+- `datasets/train/*.tsv`
+- `datasets/train/additional/*.tsv`
 
-### Closed-Source / Cloud Inference
-
-```bash
-python3 cloudllm_inference.py
-```
-
-There is also a batch-oriented variant:
+Example:
 
 ```bash
-python3 cloudllm_inference_batch.py
+python3 train/train_legacy_integrated.py --profile qwen
 ```
 
-### Ollama Inference
+Key options:
 
-Single-script local inference:
+- `--profile {qwen,phi,llama}` selects the backbone family and legacy defaults
+- `--train_type history` is the default
+- `--train_type rewrite` switches the planner to use `rewrited_query` instead of conversation history
+- `--skip_postprocess` keeps the run at checkpoint/adapter stage without GGUF or Ollama export
+
+### `train/train_multitask_rma.py`
+
+This script trains a single multitask LoRA adapter that mixes two objectives in one run:
+
+- rewrite training: generate `rewrited_query` from `(conversation_history, query)`
+- planning training: generate the final tool `plan` and `arguments` from `rewrited_query`
+
+The rewrite side reuses the same file-selection rule as `train_sentence_rewriter.py`. The planning side loads TSVs whose names contain `nonNR` from `datasets/train/`, and also includes `datasets/train/it2_NR_train.tsv` when it exists.
+
+Example:
 
 ```bash
-python3 ollama_inference.py
+python3 train/train_multitask_rma.py \
+  --model_name "Qwen/Qwen3-4B"
 ```
 
-Multi-file evaluation:
+Key options:
+
+- `--mix_strategy balanced` interleaves rewrite and planning samples
+- `--mix_strategy concat` concatenates the two processed datasets
+- `--rewrite_sampling_prob` controls the rewrite/planning ratio when using balanced interleaving
+- `--skip_postprocess` disables merge, GGUF export, and Ollama registration
+
+### `train/train_oneshot_rma_qwen.py`
+
+This script trains a Qwen-based one-shot RMA adapter that predicts the full structured target in one generation:
+
+- `rewrited_query`
+- `plan`
+- `arguments`
+
+Unlike the multitask trainer, this script formats each example as a single one-shot chat prompt and learns to emit the full JSON target directly.
+
+It reads training data from:
+
+- `datasets/train/*.tsv` files whose names contain `nonNR`
+- `datasets/train/it2_NR_train.tsv` when present
+- `datasets/train/additional/*.tsv`
+
+Example:
+
+```bash
+python3 train/train_oneshot_rma_qwen.py \
+  --model_name "Qwen/Qwen3-4B"
+```
+
+Key options:
+
+- this script currently supports only Qwen-family backbones
+- `--max_length` controls prompt truncation length
+- `--skip_postprocess` leaves the run at checkpoint/adapter stage
+- postprocessing defaults follow the same merge, GGUF export, and Ollama registration flow used by the other RMA training scripts
+
+Historical single-purpose training scripts are still present under [`train/`](train/), but the four entry points above are the main operational scripts used in this repository.
+
+## Inference Workflows
+
+The main local inference and evaluation entry points used in recent experiments are the three scripts below.
+
+### `ollama_inference_oneshot.py`
+
+This script evaluates a one-shot model that predicts the full structured output in a single generation:
+
+- `rewrited_query`
+- `plan`
+- `arguments`
+
+It renders a Qwen-style one-shot chat prompt from `conversation_history`, `query`, candidate tools, and the API schema, then queries a single Ollama model and compares the generated JSON against the ground truth.
+
+Example:
+
+```bash
+python3 ollama_inference_oneshot.py \
+  --model_name qwen3-oneshot:latest \
+  --test_key base,complex \
+  --o datasets/result/260406-ablation/qwen3-oneshot.tsv
+```
+
+Key options:
+
+- `--model_name` selects the Ollama model to evaluate
+- `--test_key` selects one or more built-in split groups such as `base`, `complex`, or `swap`
+- `--host` overrides the Ollama server address
+- `--o` sets the output TSV path
+
+The output TSV stores the model generation, ground truth, pass/fail results for `plan`, `arguments`, and `all`, plus the originating test file and turn.
+
+### `ollama_inference_multi.py`
+
+This script evaluates a single planning model over multiple evaluation files. It supports both:
+
+- base/history prompting, where the model sees `conversation_history` and the raw `query`
+- rewrite prompting, where the model sees the ground-truth `rewrited_query`
+
+The exact model and prompt template are selected by the `--t` configuration key.
+
+Example:
 
 ```bash
 python3 ollama_inference_multi.py \
   --t base-qwen3 \
   --test_key base,complex \
-  --o datasets/result/260330/scale-qwen3-4b-base.tsv
+  --o datasets/result/260406-ablation/qwen3-new-base.tsv
 ```
 
-`ollama_inference_multi.py` computes per-file and turn-wise accuracy summaries, including plan-macro accuracy.
+Key options:
 
-Current built-in `test_key` groups in [`ollama_inference_multi.py`](/home/hj153lee/RMA/ollama_inference_multi.py) include:
+- `--t` selects a predefined model and prompt-mode pair such as `base-qwen3`, `rewrite-qwen3`, `base-llama3`, or `new-base-qwen3`
+- `--test_key` selects built-in file groups such as `base`, `complex`, `swap`, and `manual_rewrited`
+- `--host` overrides the Ollama server address
+- `--o` sets the output TSV path
 
-- `base`
-- `complex`
-- `swap`
-- `manual_rewrited`
+This is the main script for measuring planning accuracy when the evaluation uses either the original query or the ground-truth rewritten query as input.
 
-The script currently points `base` and `complex` to files under [`datasets/tc/capped_complex_plan5/`](/home/hj153lee/RMA/datasets/tc/capped_complex_plan5).
+### `rma_plan_pipeline.py`
 
-`--t` selects the prompt/model configuration, for example:
+This script evaluates the full two-stage pipeline:
 
-- `base-qwen3`
-- `base-qwen3-1.7b`
-- `base-llama3`
-- `base-phi4`
-- rewrite variants for several backbones
+1. an RMA model rewrites the input into a `rewrited_query`
+2. a planning model predicts `plan` and `arguments` from that generated rewritten query
+
+Unlike `ollama_inference_multi.py`, this script does not use the ground-truth rewritten query. It measures end-to-end behavior of the rewrite-then-planning pipeline.
+
+Example:
+
+```bash
+python3 rma_plan_pipeline.py \
+  --model_family qwen3 \
+  --test_key base,complex \
+  --o datasets/result/260405-planning/qwen3.tsv
+```
+
+Key options:
+
+- `--model_family` selects a predefined rewrite-model and planning-model pair such as `qwen3`, `llama3`, `phi4`, `qwen25`, or experiment-specific variants like `qwen3-multitask`
+- `--test_key` selects built-in split groups such as `base`, `complex`, `manual`, `advanced_manual`, and `manual_rewrited`
+- `--rewrite_host` and `--plan_host` let you point the two stages at different Ollama servers
+- `--o` sets the output TSV path
+
+The output TSV includes both stages of the pipeline, including the rewrite prompt, generated rewritten query, planning prompt, planning generation, and final correctness columns.
+
+## Model Merge
+
+For the main adapter-based training workflows, model export is already built into the training scripts. In particular, the following scripts all run the same postprocessing pipeline after training unless you explicitly disable it:
+
+- `train/train_sentence_rewriter.py`
+- `train/train_legacy_integrated.py`
+- `train/train_multitask_rma.py`
+- `train/train_oneshot_rma_qwen.py`
+
+After the training step finishes, these scripts automatically do the following:
+
+1. select the exported adapter checkpoint or final adapter directory
+2. merge the LoRA adapter into the base Hugging Face model
+3. convert the merged model to GGUF with `llama.cpp`
+4. write an Ollama `Modelfile`
+5. register the model with `ollama create`
+
+In other words, for these four training entry points, there is normally no separate manual merge step.
+
+Common controls:
+
+- `--skip_postprocess` keeps only the training outputs and skips merge, GGUF export, and Ollama registration
+- `--postprocess_only` reruns only the export pipeline from an existing training output directory
+- `--export_checkpoint_epoch` exports a specific saved epoch checkpoint
+- `--export_source {final_checkpoint,final_adapter}` chooses whether export starts from the final checkpoint or final adapter directory
+- `--merged_dir`, `--gguf_path`, `--modelfile`, and `--ollama_model_name` override the default export targets
+- `--base_dir`, `--base_model`, `--hf_token`, and `--force_download` control how the base model is resolved before merge
+- `--ollama_host`, `--ollama_models_dir`, `--ollama_bin`, and `--llama_cpp_dir` control the local Ollama and GGUF conversion environment
+
+Typical usage:
+
+```bash
+python3 train/train_multitask_rma.py \
+  --model_name "Qwen/Qwen3-4B"
+```
+
+If you want to train first and export later, use the same script in two phases:
+
+```bash
+python3 train/train_multitask_rma.py \
+  --model_name "Qwen/Qwen3-4B" \
+  --skip_postprocess
+
+python3 train/train_multitask_rma.py \
+  --model_name "Qwen/Qwen3-4B" \
+  --postprocess_only
+```
+
+The same postprocessing interface is shared by all four scripts above, so the same flags and workflow apply to `train/train_sentence_rewriter.py`, `train/train_legacy_integrated.py`, `train/train_multitask_rma.py`, and `train/train_oneshot_rma_qwen.py`.
 
 ## Evaluation Analysis
 
