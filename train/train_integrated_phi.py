@@ -27,7 +27,6 @@ PREFIX     = "rma-rewrite-integrated-half"
 # ─── Model & tokenizer ────────────────────────────────────────────
 tokenizer = AutoTokenizer.from_pretrained(
     MODEL_NAME,
-    trust_remote_code=True,
 )
 
 if tokenizer.pad_token is None:
@@ -42,9 +41,8 @@ tokenizer.model_max_length = 1536                 # keep small for LoRA; raise i
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
     #attn_implementation="flash_attention_2",
-    trust_remote_code=True,
     device_map="auto"
 )
 model.gradient_checkpointing_enable()

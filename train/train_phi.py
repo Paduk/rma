@@ -38,7 +38,6 @@ PREFIX     = "1st"
 # ─── Model & tokenizer ────────────────────────────────────────────
 tokenizer = AutoTokenizer.from_pretrained(
     MODEL_NAME,
-    trust_remote_code=True,
 )
 tokenizer.pad_token     = tokenizer.unk_token      # avoid endless generation
 tokenizer.pad_token_id  = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
@@ -47,9 +46,8 @@ tokenizer.model_max_length = 1024                  # keep small for LoRA; raise 
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    torch_dtype=torch.bfloat16,
+    dtype=torch.bfloat16,
     #attn_implementation="flash_attention_2",
-    trust_remote_code=True,
     device_map="auto"
 )
 model.gradient_checkpointing_enable()

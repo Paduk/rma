@@ -38,8 +38,10 @@ from train_sentence_rewriter import (
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_LIB_PATH,
     DEFAULT_OLLAMA_MODELS_DIR,
+    DEFAULT_OUTPUT_ROOT,
     infer_model_slug,
     postprocess_trained_model,
+    resolve_model_storage_paths,
 )
 
 
@@ -145,7 +147,12 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         default=None,
-        help="Explicit output_dir. If omitted, the legacy naming rule is used.",
+        help="Explicit training output dir. If omitted, a run dir is created under output_root/model_name.",
+    )
+    parser.add_argument(
+        "--output_root",
+        default=str(DEFAULT_OUTPUT_ROOT),
+        help="Root directory for HF cache, checkpoints, and final adapter.",
     )
     parser.add_argument(
         "--num_train_epochs",
@@ -311,9 +318,24 @@ def resolve_output_dir(output_dir: str | None, default_name: str) -> str:
     return str(resolve_path(target))
 
 
-def apply_postprocess_defaults(args, output_dir: Path, model_name: str, profile: str, train_type: str, prefix: str):
+def resolve_storage_paths(args, model_name: str, default_output_name: str):
+    output_root = Path(args.output_root).expanduser().resolve()
+    model_root_dir, default_output_dir, cache_dir = resolve_model_storage_paths(
+        output_root,
+        model_name,
+        default_output_name,
+    )
+    output_dir = (
+        Path(resolve_output_dir(args.output_dir, default_output_name))
+        if args.output_dir is not None
+        else default_output_dir
+    )
+    return output_root, model_root_dir, output_dir, cache_dir
+
+
+def apply_postprocess_defaults(args, output_root: Path, model_name: str, profile: str, train_type: str, prefix: str):
     model_slug = infer_model_slug(model_name)
-    artifact_root = output_dir.parent
+    artifact_root = output_root.parent
     artifact_stem = f"{model_slug}-{profile}-{train_type}-{prefix}"
 
     merged_dir = (
@@ -342,6 +364,8 @@ def apply_postprocess_defaults(args, output_dir: Path, model_name: str, profile:
 def maybe_run_postprocess_only(
     args,
     output_dir: Path,
+    output_root: Path,
+    cache_dir: Path,
     model_name: str,
     preexisting_checkpoint_names: set[str],
 ):
@@ -357,10 +381,11 @@ def maybe_run_postprocess_only(
         args=args,
         model_name=model_name,
         output_dir=output_dir,
-        output_root=output_dir.parent,
+        output_root=output_root,
         preexisting_checkpoint_names=preexisting_checkpoint_names,
         num_train_epochs=args.num_train_epochs,
         final_global_step=None,
+        cache_dir=cache_dir,
     )
     return True
 
@@ -699,25 +724,46 @@ def run_qwen_profile(args):
     train_type = resolve_profile_value(args, "train_type")
     prefix = resolve_profile_value(args, "prefix")
     max_len = resolve_profile_value(args, "max_len")
-    output_dir = Path(
-        resolve_output_dir(
-            args.output_dir,
-            f"{model_name.split('/')[-1]}-{train_type}-{prefix}",
-        )
+    output_root, model_root_dir, output_dir, cache_dir = resolve_storage_paths(
+        args,
+        model_name,
+        f"{model_name.split('/')[-1]}-{train_type}-{prefix}",
     )
-    apply_postprocess_defaults(args, output_dir, model_name, args.profile, train_type, prefix)
+    apply_postprocess_defaults(args, output_root, model_name, args.profile, train_type, prefix)
 
     if args.postprocess_only and args.skip_postprocess:
         raise ValueError("--postprocess_only and --skip_postprocess cannot be used together.")
 
+    if args.postprocess_only:
+        if not output_dir.exists():
+            raise FileNotFoundError(
+                f"Training output directory not found for --postprocess_only: {output_dir}"
+            )
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
     preexisting_checkpoint_names = {
         path.name for path in output_dir.glob("checkpoint-*") if path.is_dir()
     }
-    if maybe_run_postprocess_only(args, output_dir, model_name, preexisting_checkpoint_names):
+    print(f"model_name: {model_name}")
+    print(f"model_root_dir: {model_root_dir}")
+    print(f"hf_cache_dir: {cache_dir}")
+    print(f"training_output_dir: {output_dir}")
+
+    if maybe_run_postprocess_only(
+        args,
+        output_dir,
+        output_root,
+        cache_dir,
+        model_name,
+        preexisting_checkpoint_names,
+    ):
         return
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
+        cache_dir=str(cache_dir),
         trust_remote_code=True,
     )
     if tokenizer.pad_token is None:
@@ -730,7 +776,8 @@ def run_qwen_profile(args):
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,
+        cache_dir=str(cache_dir),
+        dtype=torch.bfloat16,
         trust_remote_code=True,
         device_map="auto",
     )
@@ -777,10 +824,11 @@ def run_qwen_profile(args):
         args=args,
         model_name=model_name,
         output_dir=output_dir,
-        output_root=output_dir.parent,
+        output_root=output_root,
         preexisting_checkpoint_names=preexisting_checkpoint_names,
         num_train_epochs=training_args.num_train_epochs,
         final_global_step=final_global_step,
+        cache_dir=cache_dir,
     )
 
 
@@ -789,26 +837,46 @@ def run_phi_profile(args):
     train_type = resolve_profile_value(args, "train_type")
     prefix = resolve_profile_value(args, "prefix")
     max_len = resolve_profile_value(args, "max_len")
-    output_dir = Path(
-        resolve_output_dir(
-            args.output_dir,
-            f"{model_name.split('/')[-1]}-{train_type}-{prefix}",
-        )
+    output_root, model_root_dir, output_dir, cache_dir = resolve_storage_paths(
+        args,
+        model_name,
+        f"{model_name.split('/')[-1]}-{train_type}-{prefix}",
     )
-    apply_postprocess_defaults(args, output_dir, model_name, args.profile, train_type, prefix)
+    apply_postprocess_defaults(args, output_root, model_name, args.profile, train_type, prefix)
 
     if args.postprocess_only and args.skip_postprocess:
         raise ValueError("--postprocess_only and --skip_postprocess cannot be used together.")
 
+    if args.postprocess_only:
+        if not output_dir.exists():
+            raise FileNotFoundError(
+                f"Training output directory not found for --postprocess_only: {output_dir}"
+            )
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
     preexisting_checkpoint_names = {
         path.name for path in output_dir.glob("checkpoint-*") if path.is_dir()
     }
-    if maybe_run_postprocess_only(args, output_dir, model_name, preexisting_checkpoint_names):
+    print(f"model_name: {model_name}")
+    print(f"model_root_dir: {model_root_dir}")
+    print(f"hf_cache_dir: {cache_dir}")
+    print(f"training_output_dir: {output_dir}")
+
+    if maybe_run_postprocess_only(
+        args,
+        output_dir,
+        output_root,
+        cache_dir,
+        model_name,
+        preexisting_checkpoint_names,
+    ):
         return
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        trust_remote_code=True,
+        cache_dir=str(cache_dir),
     )
     tokenizer.pad_token = tokenizer.unk_token
     tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
@@ -817,8 +885,8 @@ def run_phi_profile(args):
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
+        cache_dir=str(cache_dir),
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     model.gradient_checkpointing_enable()
@@ -870,10 +938,11 @@ def run_phi_profile(args):
         args=args,
         model_name=model_name,
         output_dir=output_dir,
-        output_root=output_dir.parent,
+        output_root=output_root,
         preexisting_checkpoint_names=preexisting_checkpoint_names,
         num_train_epochs=training_args.num_train_epochs,
         final_global_step=final_global_step,
+        cache_dir=cache_dir,
     )
 
 
@@ -882,30 +951,51 @@ def run_llama_profile(args):
     train_type = resolve_profile_value(args, "train_type")
     prefix = resolve_profile_value(args, "prefix")
     max_len = resolve_profile_value(args, "max_len")
-    output_dir = Path(
-        resolve_output_dir(
-            args.output_dir,
-            f"{model_name.split('/')[0]}-{train_type}-{prefix}",
-        )
+    output_root, model_root_dir, output_dir, cache_dir = resolve_storage_paths(
+        args,
+        model_name,
+        f"{model_name.split('/')[0]}-{train_type}-{prefix}",
     )
-    apply_postprocess_defaults(args, output_dir, model_name, args.profile, train_type, prefix)
+    apply_postprocess_defaults(args, output_root, model_name, args.profile, train_type, prefix)
 
     if args.postprocess_only and args.skip_postprocess:
         raise ValueError("--postprocess_only and --skip_postprocess cannot be used together.")
 
+    if args.postprocess_only:
+        if not output_dir.exists():
+            raise FileNotFoundError(
+                f"Training output directory not found for --postprocess_only: {output_dir}"
+            )
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
     preexisting_checkpoint_names = {
         path.name for path in output_dir.glob("checkpoint-*") if path.is_dir()
     }
-    if maybe_run_postprocess_only(args, output_dir, model_name, preexisting_checkpoint_names):
+    print(f"model_name: {model_name}")
+    print(f"model_root_dir: {model_root_dir}")
+    print(f"hf_cache_dir: {cache_dir}")
+    print(f"training_output_dir: {output_dir}")
+
+    if maybe_run_postprocess_only(
+        args,
+        output_dir,
+        output_root,
+        cache_dir,
+        model_name,
+        preexisting_checkpoint_names,
+    ):
         return
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=str(cache_dir))
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16,
+        cache_dir=str(cache_dir),
+        dtype=torch.bfloat16,
         device_map="auto",
     )
     model.gradient_checkpointing_enable()
@@ -998,10 +1088,11 @@ def run_llama_profile(args):
         args=args,
         model_name=model_name,
         output_dir=output_dir,
-        output_root=output_dir.parent,
+        output_root=output_root,
         preexisting_checkpoint_names=preexisting_checkpoint_names,
         num_train_epochs=training_args.num_train_epochs,
         final_global_step=final_global_step,
+        cache_dir=cache_dir,
     )
 
 

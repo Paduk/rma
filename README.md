@@ -391,6 +391,63 @@ python3 train/train_multitask_rma.py \
 
 The same postprocessing interface is shared by all four scripts above, so the same flags and workflow apply to `train/train_sentence_rewriter.py`, `train/train_legacy_integrated.py`, `train/train_multitask_rma.py`, and `train/train_oneshot_rma_qwen.py`.
 
+## Inference
+
+### RMA / Base Inference
+
+Available local inference entry points include:
+
+- [`ollama_inference.py`](/home/hj153lee/RMA/ollama_inference.py)
+- [`base_ollama_inference.py`](/home/hj153lee/RMA/base_ollama_inference.py)
+
+### Closed-Source / Cloud Inference
+
+```bash
+python3 cloudllm_inference.py
+```
+
+There is also a batch-oriented variant:
+
+```bash
+python3 cloudllm_inference_batch.py
+```
+
+### Ollama Inference
+
+Single-script local inference:
+
+```bash
+python3 ollama_inference.py
+```
+
+Multi-file evaluation:
+
+```bash
+python3 ollama_inference_multi.py \
+  --t base-qwen3 \
+  --test_key base,complex \
+  --o datasets/result/260330/scale-qwen3-4b-base.tsv
+```
+
+`ollama_inference_multi.py` computes per-file and turn-wise accuracy summaries, including plan-macro accuracy.
+
+Current built-in `test_key` groups in [`ollama_inference_multi.py`](/home/hj153lee/RMA/ollama_inference_multi.py) include:
+
+- `base`
+- `complex`
+- `swap`
+- `manual_rewrited`
+
+The script currently points `base` and `complex` to files under [`datasets/tc/capped_complex_plan5/`](/home/hj153lee/RMA/datasets/tc/capped_complex_plan5).
+
+`--t` selects the prompt/model configuration, for example:
+
+- `base-qwen3`
+- `base-qwen3-1.7b`
+- `base-llama3`
+- `base-phi4`
+- rewrite variants for several backbones
+
 ## Evaluation Analysis
 
 Run the result analysis script:
