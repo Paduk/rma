@@ -58,8 +58,11 @@ def build_system_message(api_str: str) -> str:
     return (
         "Given a conversation history, a user query, and a list of available tools, "
         "first rewrite the query by resolving ambiguous references using the "
-        "conversation history. Then select the most appropriate tool and generate "
-        "its arguments. Return compact JSON only with keys "
+        "conversation history. Then, based on the rewrited_query, select the most "
+        "appropriate tool and generate its arguments. Do not choose a tool first "
+        "and then write rewrited_query afterward to justify it. Only use parameter "
+        "values that are explicitly stated or can be reasonably inferred from the "
+        "query or conversation history. Return compact JSON only with keys "
         "\"rewrited_query\", \"plan\", and \"arguments\". Always include all three "
         "keys. The value of \"arguments\" must always be an object. If no tool "
         "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}.\n"
