@@ -206,9 +206,9 @@ def build_data_files():
     return {
         "base": [
             "datasets/tc/scale/it2_nonNR_tc.tsv",
-            # "datasets/tc/scale/it3_nonNR_tc.tsv",
-            # "datasets/tc/scale/it4_nonNR_tc.tsv",
-            # "datasets/tc/scale/it5_nonNR_tc.tsv",
+            "datasets/tc/scale/it3_nonNR_tc.tsv",
+            "datasets/tc/scale/it4_nonNR_tc.tsv",
+            "datasets/tc/scale/it5_nonNR_tc.tsv",
         ],
         "complex": [
             "datasets/tc/scale/it3_complex_1_tc.tsv",

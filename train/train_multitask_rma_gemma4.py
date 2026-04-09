@@ -17,8 +17,11 @@ from postprocess_gemma4 import (
     POSTPROCESS_STAGE_CHOICES,
     postprocess_gemma4_trained_model,
 )
+from gemma4_multitask_prompting import (
+    render_planning_prompt,
+    render_rewrite_prompt,
+)
 from train_gemma4 import (
-    apply_chat_template,
     build_lora_config,
     build_trainer,
     build_training_args,
@@ -48,22 +51,6 @@ DEFAULT_TRAIN_DIR = PROJECT_ROOT / "datasets" / "train"
 DEFAULT_ADDITIONAL_DIR = DEFAULT_TRAIN_DIR / "additional"
 PLANNING_EXTRA_FILE = "it2_NR_train.tsv"
 DEFAULT_OUTPUT_TAG = "multitask-rma-gemma4"
-
-REWRITE_SYSTEM_PROMPT = (
-    "Rewrite the query clearly by replacing ambiguous pronouns (like \"it\", "
-    "\"that\") with explicit information from the conversation history. Keep "
-    "exactly the same sentence structure. Do NOT generate or include any "
-    "information, words, or values outside of the provided conversation_history "
-    "and query."
-)
-
-PLANNING_SYSTEM_PROMPT = (
-    "Given a user query and a list of available tools, select the most "
-    "appropriate tool and generate the corresponding parameters. If no tool "
-    "matches the query, set the tool to 'None'. Only use parameter values that "
-    "are explicitly stated or can be reasonably inferred from the query.\n"
-    "<|tool|>{tools}<|/tool|>"
-)
 
 
 def parse_args():
@@ -188,25 +175,20 @@ def tokenize_with_labels(tokenizer, prompt: str, prompt_prefix: str, max_length:
 
 def build_rewrite_preprocess_fn(tokenizer, max_length: int):
     def preprocess(example):
-        data = {
-            "conversation_history": example["conversation_history"],
-            "query": example["query"],
-        }
-        user_content = json.dumps(data, ensure_ascii=False, indent=2)
         assistant_content = json.dumps(
             {"rewrited_query": example["rewrited_query"]},
             ensure_ascii=False,
         )
-        messages = [
-            {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-
-        prompt_prefix = apply_chat_template(tokenizer, messages, add_generation_prompt=True)
-        prompt = apply_chat_template(
+        prompt_prefix = render_rewrite_prompt(
             tokenizer,
-            messages + [{"role": "assistant", "content": assistant_content}],
-            add_generation_prompt=False,
+            conversation_history=example["conversation_history"],
+            query=example["query"],
+        )
+        prompt = render_rewrite_prompt(
+            tokenizer,
+            conversation_history=example["conversation_history"],
+            query=example["query"],
+            assistant_content=assistant_content,
         )
 
         input_ids, labels = tokenize_with_labels(
@@ -229,23 +211,21 @@ def build_rewrite_preprocess_fn(tokenizer, max_length: int):
 def build_planning_preprocess_fn(tokenizer, apis: Dict, max_length: int):
     def preprocess(example):
         api_str = build_api_str(example, apis)
-        system_msg = PLANNING_SYSTEM_PROMPT.format(tools=api_str)
-        user_content = f"User Query: {example['rewrited_query']}"
         assistant_content = (
             json.dumps(example["answer"], ensure_ascii=False)
             if isinstance(example["answer"], dict)
             else example["answer"]
         )
-        messages = [
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_content},
-        ]
-
-        prompt_prefix = apply_chat_template(tokenizer, messages, add_generation_prompt=True)
-        prompt = apply_chat_template(
+        prompt_prefix = render_planning_prompt(
             tokenizer,
-            messages + [{"role": "assistant", "content": assistant_content}],
-            add_generation_prompt=False,
+            tools=api_str,
+            rewritten_query=example["rewrited_query"],
+        )
+        prompt = render_planning_prompt(
+            tokenizer,
+            tools=api_str,
+            rewritten_query=example["rewrited_query"],
+            assistant_content=assistant_content,
         )
 
         input_ids, labels = tokenize_with_labels(

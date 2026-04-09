@@ -39,12 +39,13 @@ def process_example(
     - gt_parser: 예측값과 비교할 gt(dict)로 변환하는 함수
     """
     error_payload = None
+    prompt = ex.get("strprompt", "")
     raw = ""
     gt = {}
 
     try:
         # 1. 응답 생성
-        response = generate_response("", [ex["strprompt"]])[0]
+        response = generate_response("", [prompt])[0]
         raw = response.get("text", "")
         
         if not raw:
@@ -80,6 +81,7 @@ def process_example(
         "query":                ex.get("query"),
         "rewrited_query":       ex.get("rewrited_query"),
         "candidates":           ex.get("candidates"),
+        "raw":                  raw,
         "generation":           result,
         "gt":                   gt,
         "plan":                 plan_res,
@@ -87,7 +89,7 @@ def process_example(
         "all":                  all_res,
         "file":                 os.path.basename(file_path)
     }
-    return row, error_payload
+    return row, error_payload, prompt, raw
 
 # api 파일을 한 줄씩 읽어 각 plan에 해당하는 데이터를 사전으로 저장
 def read_apis(api_file, simple=False):
@@ -356,6 +358,8 @@ def main(out_file):
         }
 
     all_results = []
+    printed_first_prompt = False
+    printed_first_raw = False
     print(f"Selected test_keys: {test_keys}")
     for test_key in test_keys:
         print(f"\n# Running split: {test_key}")
@@ -367,6 +371,39 @@ def main(out_file):
             )
             file_results = []
             max_workers = min(8, os.cpu_count() * 5)  # I/O 바운드이므로 cpu_count * 상수
+
+            if len(proc) > 0:
+                first_row, first_error_payload, first_prompt, first_raw = process_example(
+                    proc[0],
+                    row_idx=0,
+                    test_key=test_key,
+                    model_name=model_name,
+                    generate_response=generate_response,
+                    extract_fn=extract_json_from_markdown,
+                    gt_parser=lambda s: ast.literal_eval(s) if isinstance(s, str) else s,
+                    file_path=file_path,
+                )
+                if not printed_first_prompt:
+                    print("first_inference_prompt:")
+                    print(first_prompt)
+                    print()
+                    printed_first_prompt = True
+                if not printed_first_raw:
+                    print("first_inference_raw:")
+                    print(first_raw)
+                    print()
+                    printed_first_raw = True
+                first_row["test_key"] = test_key
+                first_row["turn"] = extract_turn_from_filename(os.path.basename(file_path))
+                file_results.append(first_row)
+                if first_error_payload is not None:
+                    append_error_log(error_log_path, first_error_payload)
+                    print(
+                        f"[Error] {first_error_payload['file']} row={first_error_payload['row_idx']}: "
+                        f"{first_error_payload['error_message']}",
+                        flush=True,
+                    )
+
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(
@@ -381,13 +418,14 @@ def main(out_file):
                         file_path=file_path,
                     ): ex
                     for row_idx, ex in enumerate(proc)
+                    if row_idx != 0
                 }
                 for future in tqdm(
                     as_completed(futures),
                     total=len(futures),
                     desc=f"{test_key}/{os.path.basename(file_path)}",
                 ):
-                    row, error_payload = future.result()
+                    row, error_payload, _, _ = future.result()
                     row["test_key"] = test_key
                     row["turn"] = extract_turn_from_filename(os.path.basename(file_path))
                     file_results.append(row)

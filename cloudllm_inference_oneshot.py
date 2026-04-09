@@ -3,7 +3,6 @@ import ast
 import json
 import os
 import re
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,15 +12,11 @@ from tqdm import tqdm
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-UTILS_DIR = PROJECT_ROOT / "utils"
-if str(UTILS_DIR) not in sys.path:
-    sys.path.insert(0, str(UTILS_DIR))
-
-from oneshot_qwen_prompt import (
+from utils.oneshot_qwen_prompt import (
     build_oneshot_messages,
     render_messages_as_plain_text,
 )
-from frequently_used_tools import get_model_name
+from utils.frequently_used_tools import get_model_name
 
 DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
 DEFAULT_MODEL_NAME = "o4-mini"
@@ -392,6 +387,7 @@ def process_example(
         "query": example.get("query"),
         "rewrited_query": example.get("rewrited_query"),
         "candidates": example.get("candidates"),
+        "raw": raw,
         "generation": result,
         "gt": gt,
         "plan": plan_res,

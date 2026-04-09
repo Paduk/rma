@@ -9,9 +9,10 @@ import pandas as pd
 from datasets import load_dataset
 from tqdm import tqdm
 
-from train.gemma_prompts import (
-    SFT_REWRITE_INFERENCE_GEMMA,
-    SFT_RMA_INFERENCE_GEMMA,
+from train.gemma4_multitask_prompting import (
+    DEFAULT_GEMMA4_PROMPT_TOKENIZER_NAME,
+    render_planning_prompt,
+    render_rewrite_prompt,
 )
 from utils.generation_backends import (
     add_text_generation_backend_args,
@@ -49,12 +50,18 @@ def build_arg_parser():
     )
     add_text_generation_backend_args(
         parser,
-        default_host="http://localhost:11435",
+        default_host="http://localhost:11436",
         prefix="plan",
         default_num_predict=512,
     )
     parser.add_argument("--rewrite_model_name", type=str, default=None, help="Override rewrite-stage Ollama model name")
     parser.add_argument("--plan_model_name", type=str, default=None, help="Override planning-stage Ollama model name")
+    parser.add_argument(
+        "--prompt_tokenizer_name",
+        type=str,
+        default=DEFAULT_GEMMA4_PROMPT_TOKENIZER_NAME,
+        help="HF tokenizer used to reproduce the Gemma 4 multitask training chat template.",
+    )
     return parser
 
 
@@ -231,25 +238,30 @@ def parse_test_keys(test_key_arg, data_files):
     return deduped
 
 
+def load_prompt_tokenizer(model_name: str):
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as exc:
+        raise RuntimeError(
+            "transformers is required to render the Gemma 4 chat template during inference."
+        ) from exc
+
+    return AutoTokenizer.from_pretrained(model_name)
+
+
 def get_model_configs(model_family):
     config = {
         "gemma4": {
             "model_name": "gemma-multitask-rma-gemma4:latest",
-            "prompt_template": SFT_RMA_INFERENCE_GEMMA,
             "plan_model_name": "gemma-multitask-rma-gemma4:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_GEMMA,
         },
         "gemma4-multitask": {
             "model_name": "gemma-multitask-rma-gemma4:latest",
-            "prompt_template": SFT_RMA_INFERENCE_GEMMA,
             "plan_model_name": "gemma-multitask-rma-gemma4:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_GEMMA,
         },
         "gemma4-separate": {
             "model_name": "gemma-4-e2b-it-rewrite-lm_only_lora:latest",
-            "prompt_template": SFT_RMA_INFERENCE_GEMMA,
             "plan_model_name": "gemma4-rma:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_GEMMA,
         },
     }
     if model_family not in config:
@@ -297,23 +309,24 @@ def get_data_files():
     }
 
 
-def build_rewrite_prompt(example, prompt_template):
-    data = {
-        "conversation_history": example["conversation_history"],
-        "query": example["query"],
-    }
-    return prompt_template.format(data=json.dumps(data, ensure_ascii=False, indent=2))
+def build_rewrite_prompt(example, prompt_tokenizer):
+    return render_rewrite_prompt(
+        prompt_tokenizer,
+        conversation_history=example["conversation_history"],
+        query=example["query"],
+    )
 
 
-def build_plan_prompt(example, apis, prompt_template, rewritten_query):
+def build_plan_prompt(example, apis, prompt_tokenizer, rewritten_query):
     api_str = ""
     for plan in ast.literal_eval(example["candidates"]):
         api_data = apis[plan].copy()
         api_str += f"{plan}: {api_data}\n"
 
-    return prompt_template.format(
+    return render_planning_prompt(
+        prompt_tokenizer,
         tools=api_str,
-        data=rewritten_query,
+        rewritten_query=rewritten_query,
     )
 
 
@@ -325,6 +338,7 @@ def main():
         args.plan_model = args.plan_model_name
 
     model_config = get_model_configs(args.model_family)
+    prompt_tokenizer = load_prompt_tokenizer(args.prompt_tokenizer_name)
     rewrite_backend = build_text_generation_backend_from_args(
         args,
         default_model_name=model_config["model_name"],
@@ -366,7 +380,7 @@ def main():
                 if isinstance(gt, str):
                     gt = ast.literal_eval(gt)
 
-                rewrite_prompt = build_rewrite_prompt(ex, model_config["prompt_template"])
+                rewrite_prompt = build_rewrite_prompt(ex, prompt_tokenizer)
                 rewrite_raw = ""
                 rewrite_result = None
                 rewrite_error = ""
@@ -402,7 +416,7 @@ def main():
                         plan_prompt = build_plan_prompt(
                             ex,
                             sft_apis,
-                            model_config["plan_prompt_template"],
+                            prompt_tokenizer,
                             rewritten_query,
                         )
                         plan_raw = plan_backend.generate_text(
