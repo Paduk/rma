@@ -21,6 +21,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 
+def print_first_inference_preview(*, script_name: str, test_key: str, file_name: str, prompt: str, raw: str):
+    print("\n# First Inference Preview")
+    print(f"script: {script_name}")
+    print(f"test_key: {test_key}")
+    print(f"file: {file_name}")
+    print("prompt:")
+    print(prompt or "<empty>")
+    print()
+    print("response:")
+    print(raw or "<empty>")
+    print()
+
+
 def process_example(
     ex,
     *,
@@ -383,15 +396,15 @@ def main(out_file):
                     gt_parser=lambda s: ast.literal_eval(s) if isinstance(s, str) else s,
                     file_path=file_path,
                 )
-                if not printed_first_prompt:
-                    print("first_inference_prompt:")
-                    print(first_prompt)
-                    print()
+                if not printed_first_prompt and not printed_first_raw:
+                    print_first_inference_preview(
+                        script_name="cloudllm_inference_batch.py",
+                        test_key=test_key,
+                        file_name=os.path.basename(file_path),
+                        prompt=first_prompt,
+                        raw=first_raw,
+                    )
                     printed_first_prompt = True
-                if not printed_first_raw:
-                    print("first_inference_raw:")
-                    print(first_raw)
-                    print()
                     printed_first_raw = True
                 first_row["test_key"] = test_key
                 first_row["turn"] = extract_turn_from_filename(os.path.basename(file_path))

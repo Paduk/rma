@@ -18,7 +18,7 @@ from utils.oneshot_qwen_prompt import (
 )
 from utils.frequently_used_tools import get_model_name
 
-DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
+DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "api_v3.0.1.jsonl"
 DEFAULT_MODEL_NAME = "o4-mini"
 """
 python3 /home/hj153lee/RMA/cloudllm_inference_oneshot.py \
@@ -39,7 +39,7 @@ def parse_args():
     parser.add_argument(
         "--tools_path",
         default=str(DEFAULT_TOOLS_PATH),
-        help="Path to simple_api.json.",
+        help="Path to tool schema file. Supports api_v3.0.1.jsonl or simple_api.json.",
     )
     parser.add_argument(
         "--prompt_tokenizer_name",
@@ -65,11 +65,32 @@ def parse_args():
     return parser.parse_args()
 
 
-def read_simple_apis(api_file: Path):
+def read_apis(api_file: Path):
     with open(api_file, encoding="utf-8") as f:
+        if api_file.suffix == ".jsonl":
+            out = {}
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                api_data = json.loads(line)
+                for key in ("examples", "returns", "next_turn_plans"):
+                    api_data.pop(key, None)
+                out[api_data["plan"]] = api_data
+            return out
         return json.load(f)
 
-
+def print_first_inference_preview(*, script_name: str, test_key: str, file_name: str, prompt: str, raw: str):
+    print("\n# First Inference Preview")
+    print(f"script: {script_name}")
+    print(f"test_key: {test_key}")
+    print(f"file: {file_name}")
+    print("prompt:")
+    print(prompt or "<empty>")
+    print()
+    print("response:")
+    print(raw or "<empty>")
+    print()
 def extract_turn_from_filename(file_name):
     match = re.search(r"it(\d+)", file_name)
     if not match:
@@ -180,7 +201,7 @@ def print_eval(df, title=None, test_type=None, detail=False):
         )
         print(detail_df.to_string(index=False))
         detail_df["macro_by_plan"] = detail_df[metrics].mean(axis=1).round(2)
-        print("\n# Plan별 Macro Accuracy")
+        print("\n# Plan Macro Accuracy")
         print(detail_df.to_string(index=False))
 
 
@@ -308,12 +329,12 @@ def extract_json_from_markdown(text):
             json_str = json_match.group() if json_match else None
 
         if not json_str:
-            raise ValueError("JSON 블록을 찾을 수 없습니다.")
+            raise ValueError("JSON block not found.")
 
         return json.loads(json_str)
 
     except Exception as e:
-        print("JSON 추출/파싱 실패:", e)
+        print("JSON extraction/parsing failed:", e)
         return None
 
 
@@ -401,7 +422,7 @@ def process_example(
 
 def main():
     args = parse_args()
-    apis = read_simple_apis(Path(args.tools_path))
+    apis = read_apis(Path(args.tools_path))
     model_name, generate_response = get_model_name(args.model)
     data_files = build_data_files()
     test_keys = parse_test_keys(args.test_key, data_files)
@@ -441,15 +462,15 @@ def main():
                     generate_response=generate_response,
                     model_name=model_name,
                 )
-                if not printed_first_prompt:
-                    print("first_inference_prompt:")
-                    print(first_prompt)
-                    print()
+                if not printed_first_prompt and not printed_first_raw:
+                    print_first_inference_preview(
+                        script_name="cloudllm_inference_oneshot.py",
+                        test_key=test_key,
+                        file_name=file_path.name,
+                        prompt=first_prompt,
+                        raw=first_raw,
+                    )
                     printed_first_prompt = True
-                if not printed_first_raw:
-                    print("first_inference_raw:")
-                    print(first_raw)
-                    print()
                     printed_first_raw = True
                 file_results.append(first_row)
                 split_results[test_key].append(first_row)
