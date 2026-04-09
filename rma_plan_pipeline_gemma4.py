@@ -3,42 +3,58 @@ import ast
 import json
 import os
 import re
+from pathlib import Path
 
 import pandas as pd
-import requests
 from datasets import load_dataset
 from tqdm import tqdm
 
-from train.llama_prompts import (
-    SFT_HISTORY_INFERENCE_LLAMA,
-    SFT_HISTORY_INFERENCE_PHI4,
-    SFT_HISTORY_INFERENCE_QWEN25,
-    SFT_HISTORY_INFERENCE_QWEN3,
-    SFT_REWRITE_INFERENCE_LLAMA,
-    SFT_REWRITE_INFERENCE_PHI4,
-    SFT_REWRITE_INFERENCE_QWEN25,
-    SFT_REWRITE_INFERENCE_QWEN3,
-    SFT_RMA_INFERENCE_LLAMA,
-    SFT_RMA_INFERENCE_PHI4,
-    SFT_RMA_INFERENCE_QWEN3,
-    ZERO_HISTORY_INFERENCE_LLAMA,
-    ZERO_HISTORY_INFERENCE_PHI4,
-    ZERO_HISTORY_INFERENCE_QWEN25,
-    ZERO_HISTORY_INFERENCE_QWEN3,
-    ZERO_REWRITE_INFERENCE_LLAMA,
-    ZERO_REWRITE_INFERENCE_PHI4,
-    ZERO_REWRITE_INFERENCE_QWEN25,
-    ZERO_REWRITE_INFERENCE_QWEN3,
+from train.gemma_prompts import (
+    SFT_REWRITE_INFERENCE_GEMMA,
+    SFT_RMA_INFERENCE_GEMMA,
+)
+from utils.generation_backends import (
+    add_text_generation_backend_args,
+    build_text_generation_backend_from_args,
 )
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_API_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
+
+
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description="Rewrite first, then run planning evaluation")
-    parser.add_argument("--model_family", type=str, required=True, help="one of: qwen3, qwen3-0.6b, qwen3-1.7b, llama3, phi4, qwen25")
+    parser = argparse.ArgumentParser(
+        description="Rewrite first, then run planning evaluation for Gemma 4 with shared Ollama/HF backends."
+    )
+    parser.add_argument(
+        "--model_family",
+        type=str,
+        required=True,
+        help="one of: gemma4, gemma4-multitask, gemma4-separate",
+    )
     parser.add_argument("--test_key", type=str, required=True, help="dataset split key(s), comma separated")
     parser.add_argument("--o", type=str, required=True, help="output TSV path")
-    parser.add_argument("--rewrite_host", type=str, default="http://localhost:11436", help="Ollama host for rewrite model")
-    parser.add_argument("--plan_host", type=str, default="http://localhost:11435", help="Ollama host for planning model")
+    parser.add_argument(
+        "--api",
+        type=str,
+        default=str(DEFAULT_API_PATH),
+        help="Path to simple_api.json",
+    )
+    add_text_generation_backend_args(
+        parser,
+        default_host="http://localhost:11436",
+        prefix="rewrite",
+        default_num_predict=200,
+    )
+    add_text_generation_backend_args(
+        parser,
+        default_host="http://localhost:11435",
+        prefix="plan",
+        default_num_predict=512,
+    )
+    parser.add_argument("--rewrite_model_name", type=str, default=None, help="Override rewrite-stage Ollama model name")
+    parser.add_argument("--plan_model_name", type=str, default=None, help="Override planning-stage Ollama model name")
     return parser
 
 
@@ -53,52 +69,6 @@ def read_apis(api_file, simple=False):
                 data.pop(k, None)
             out[data["plan"]] = data
         return out
-
-
-def generate_text(prompt, model, host, num_predict=512, stop=None):
-    options = {
-        "temperature": 0.0,
-        "num_predict": num_predict,
-    }
-    if stop:
-        options["stop"] = stop
-
-    response = requests.post(
-        f"{host}/api/generate",
-        json={
-            "model": model,
-            "prompt": prompt,
-            "format": "json",
-            "options": options,
-            "stream": False,
-        },
-    )
-
-    if response.status_code == 200:
-        return response.json()["response"]
-    raise Exception(f"API request failed: {response.text}")
-
-
-def generate_text_rewrite_inference_style(prompt, model, host):
-    response = requests.post(
-        f"{host}/api/generate",
-        json={
-            "model": model,
-            "prompt": prompt,
-            "options": {
-                "temperature": 0.0,
-                "format": "json",
-                "num_predict": 200,
-                "stop": ["}"],
-            },
-            "stream": False,
-        },
-    )
-
-    if response.status_code == 200:
-        return response.json()["response"]
-    raise Exception(f"API request failed: {response.text}")
-
 
 def extract_json_from_markdown(text):
     try:
@@ -225,7 +195,9 @@ def print_eval(df, title=None, test_type=None, detail=False):
 
     print("-" * 40)
 
-    with open("logs/ollama_inference_log.txt", "a", encoding="utf-8") as f:
+    log_path = PROJECT_ROOT / "logs" / "ollama_inference_log.txt"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
         if title:
             f.write(f"\n## Performance for {title}, {test_type}\n")
         for label, acc in metric_rows:
@@ -261,108 +233,24 @@ def parse_test_keys(test_key_arg, data_files):
 
 def get_model_configs(model_family):
     config = {
-        "phi4": {
-            "model_name": "phi4-rma:latest",
-            "prompt_template": SFT_RMA_INFERENCE_PHI4,
-            "plan_model_name": "phi4-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_PHI4,
+        "gemma4": {
+            "model_name": "gemma-multitask-rma-gemma4:latest",
+            "prompt_template": SFT_RMA_INFERENCE_GEMMA,
+            "plan_model_name": "gemma-multitask-rma-gemma4:latest",
+            "plan_prompt_template": SFT_REWRITE_INFERENCE_GEMMA,
         },
-        "llama3": {
-            "model_name": "llama3-rma:latest",
-            "prompt_template": SFT_RMA_INFERENCE_LLAMA,
-            "plan_model_name": "llama3-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_LLAMA,
+        "gemma4-multitask": {
+            "model_name": "gemma-multitask-rma-gemma4:latest",
+            "prompt_template": SFT_RMA_INFERENCE_GEMMA,
+            "plan_model_name": "gemma-multitask-rma-gemma4:latest",
+            "plan_prompt_template": SFT_REWRITE_INFERENCE_GEMMA,
         },
-        "qwen3": {
-            "model_name": "qwen3-rma:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen3-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
+        "gemma4-separate": {
+            "model_name": "gemma-4-e2b-it-rewrite-lm_only_lora:latest",
+            "prompt_template": SFT_RMA_INFERENCE_GEMMA,
+            "plan_model_name": "gemma4-rma:latest",
+            "plan_prompt_template": SFT_REWRITE_INFERENCE_GEMMA,
         },
-        "qwen3-1.7b": {
-            "model_name": "qwen3-rma-1.7b:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen3-rewrite-1.7b:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
-        },
-        "qwen3-0.6b": {
-            "model_name": "qwen3-rma-0.6b:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen3-rewrite-0.6b:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
-        },
-        "qwen25": {
-            "model_name": "qwen25-rma:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen25-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN25,
-        },
-        "qwen3-tctraining-e5": {
-            "model_name": "qwen3-rma-tctraining-e5:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen3-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
-        },
-        "qwen3-tctraining-e6": {
-            "model_name": "qwen3-rma-tctraining-e6:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen3-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
-        },
-        "qwen3-pure-e4": {
-            "model_name": "qwen3-pure-e4:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen3-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
-        },
-        "qwen3-pure-e5": {
-            "model_name": "qwen3-pure-e5:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen3-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
-        },
-        "qwen25-pure-e4": {
-            "model_name": "qwen25-pure-e4:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen2.5-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN25,            
-        },
-        "phi4-new": {
-            "model_name": "phi4-new:latest",
-            "prompt_template": SFT_RMA_INFERENCE_PHI4,
-            "plan_model_name": "phi4-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_PHI4,
-        },
-        "llama3-pure-e4": {
-            "model_name": "llama3-pure-e4:latest",
-            "prompt_template": SFT_RMA_INFERENCE_LLAMA,
-            "plan_model_name": "llama3-rewrite:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_LLAMA,
-        },
-        "qwen3-multitask": {
-            "model_name": "qwen3-multitask:latest",
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen3-multitask:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN3,
-        },
-        "phi4-multitask": {
-            "model_name": "phi4-multitask:latest",
-            "prompt_template": SFT_RMA_INFERENCE_PHI4,
-            "plan_model_name": "phi4-multitask:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_PHI4,
-        },
-        "llama3-multitask": {
-            "model_name": "llama3-multitask:latest",
-            "prompt_template": SFT_RMA_INFERENCE_LLAMA,
-            "plan_model_name": "llama3-multitask:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_LLAMA,
-        },
-        "qwen2.5-multitask": {
-            "model_name": "qwen25-new:latest",                        
-            "prompt_template": SFT_RMA_INFERENCE_QWEN3,
-            "plan_model_name": "qwen25-new:latest",
-            "plan_prompt_template": SFT_REWRITE_INFERENCE_QWEN25,
-        }
     }
     if model_family not in config:
         raise ValueError(
@@ -373,7 +261,7 @@ def get_model_configs(model_family):
 
 
 def get_data_files():
-    return {        
+    return {
         "base": [
             "datasets/tc/scale/it2_nonNR_tc.tsv",
             "datasets/tc/scale/it3_nonNR_tc.tsv",
@@ -431,14 +319,36 @@ def build_plan_prompt(example, apis, prompt_template, rewritten_query):
 
 def main():
     args = build_arg_parser().parse_args()
+    if not args.rewrite_model and args.rewrite_model_name:
+        args.rewrite_model = args.rewrite_model_name
+    if not args.plan_model and args.plan_model_name:
+        args.plan_model = args.plan_model_name
 
     model_config = get_model_configs(args.model_family)
-    sft_apis = read_apis("apis/simple_api.json", simple=True)
+    rewrite_backend = build_text_generation_backend_from_args(
+        args,
+        default_model_name=model_config["model_name"],
+        prefix="rewrite",
+    )
+    plan_backend = build_text_generation_backend_from_args(
+        args,
+        default_model_name=model_config["plan_model_name"],
+        prefix="plan",
+    )
+    rewrite_model_name = rewrite_backend.model_label
+    plan_model_name = plan_backend.model_label
+    sft_apis = read_apis(args.api, simple=True)
     data_files = get_data_files()
     test_keys = parse_test_keys(args.test_key, data_files)
 
-    print(f"rewrite model: {model_config['model_name']}")
-    print(f"planning model: {model_config['plan_model_name']}")
+    print(f"rewrite backend: {rewrite_backend.backend_name}")
+    print(f"rewrite model: {rewrite_model_name}")
+    if args.rewrite_backend == "ollama":
+        print(f"rewrite host: {args.rewrite_host}")
+    print(f"planning backend: {plan_backend.backend_name}")
+    print(f"planning model: {plan_model_name}")
+    if args.plan_backend == "ollama":
+        print(f"planning host: {args.plan_host}")
     print(f"Selected test_keys: {test_keys}")
 
     all_results = []
@@ -469,13 +379,17 @@ def main():
                 all_res = "fail"
 
                 try:
-                    rewrite_raw = generate_text_rewrite_inference_style(
+                    rewrite_raw = rewrite_backend.generate_text(
                         rewrite_prompt,
-                        model=model_config["model_name"],
-                        host=args.rewrite_host,
+                        temperature=args.rewrite_temperature,
+                        num_predict=args.rewrite_num_predict,
+                        response_format_json=True,
+                        stop=["}"],
                     )
-                    rewrite_raw = rewrite_raw + "}"
-                    rewritten_query = parse_rewrite_output_inference_style(rewrite_raw)
+                    rewrite_parse_input = rewrite_raw
+                    if rewrite_parse_input and not rewrite_parse_input.rstrip().endswith("}"):
+                        rewrite_parse_input = rewrite_parse_input + "}"
+                    rewritten_query = parse_rewrite_output_inference_style(rewrite_parse_input)
                     rewrite_result = {"rewrited_query": rewritten_query}
                     if not rewritten_query:
                         raise ValueError(f"Missing rewrited_query in rewrite result: {rewrite_raw}")
@@ -491,11 +405,11 @@ def main():
                             model_config["plan_prompt_template"],
                             rewritten_query,
                         )
-                        plan_raw = generate_text(
+                        plan_raw = plan_backend.generate_text(
                             plan_prompt,
-                            model=model_config["plan_model_name"],
-                            host=args.plan_host,
-                            num_predict=512,
+                            temperature=args.plan_temperature,
+                            num_predict=args.plan_num_predict,
+                            response_format_json=True,
                         )
                         plan_result = parse_model_output(plan_raw)
                         plan_res = "pass" if plan_result.get("plan") == gt.get("plan") else "fail"
@@ -507,15 +421,21 @@ def main():
 
                 row = {
                     "test_key": test_key,
+                    "rewrite_backend_name": rewrite_backend.backend_name,
+                    "rewrite_model_name": rewrite_model_name,
+                    "planning_backend_name": plan_backend.backend_name,
+                    "planning_model_name": plan_model_name,
                     "conversation_history": ex.get("conversation_history"),
                     "query": ex.get("query"),
                     "gt_rewrited_query": ex.get("rewrited_query"),
                     "generated_rewrited_query": rewritten_query,
                     "rewrite_prompt": rewrite_prompt,
+                    "rewrite_raw": rewrite_raw,
                     "rewrite_generation": rewrite_result if rewrite_result is not None else {"error": rewrite_error, "raw": rewrite_raw},
                     "rewrite_error": rewrite_error,
                     "candidates": ex.get("candidates"),
                     "planning_prompt": plan_prompt,
+                    "planning_raw": plan_raw,
                     "planning_generation": plan_result,
                     "gt": gt,
                     "plan": plan_res,
@@ -531,7 +451,7 @@ def main():
             print_eval(
                 df_file,
                 title=f"{test_key}/{os.path.basename(file_path)} | model={args.model_family}",
-                test_type=f"{model_config['model_name']} -> {model_config['plan_model_name']}",
+                test_type=f"{rewrite_model_name} -> {plan_model_name}",
             )
             all_results.extend(file_results)
 
@@ -541,7 +461,7 @@ def main():
         print_eval(
             df_split,
             title=f"split={test_key} | model={args.model_family}",
-            test_type=f"{model_config['model_name']} -> {model_config['plan_model_name']}",
+            test_type=f"{rewrite_model_name} -> {plan_model_name}",
         )
         print_turn_macro_summary(df_split, title=f"split={test_key}", metric="all")
 
@@ -549,10 +469,12 @@ def main():
     print_eval(
         result,
         title=f"combined={combined_title} | model={args.model_family}",
-        test_type=f"{model_config['model_name']} -> {model_config['plan_model_name']}",
+        test_type=f"{rewrite_model_name} -> {plan_model_name}",
     )
     print_turn_macro_summary(result, title=f"combined={combined_title}", metric="all")
-    result.to_csv(args.o, sep="\t", index=False, encoding="utf-8-sig")
+    out_path = Path(args.o)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    result.to_csv(out_path, sep="\t", index=False, encoding="utf-8-sig")
 
 
 if __name__ == "__main__":

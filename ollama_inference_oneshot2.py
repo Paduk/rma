@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -27,10 +28,10 @@ DEFAULT_HOST = "http://localhost:11436"
 DEFAULT_MODEL_NAME = "qwen3-oneshot:latest"
 DEFAULT_PROMPT_TOKENIZER_NAME = None
 """
-python3 /home/hj153lee/RMA/ollama_inference_oneshot.py \
---model_name phi4-oneshot-e6:latest \
+python3 /home/hj153lee/RMA/ollama_inference_oneshot2.py \
+--model_name qwen3-oneshot:latest \
 --test_key base,complex \
---o /home/hj153lee/RMA/datasets/result/260406-ablation/phi4-e6-oneshot.tsv \
+--o /home/hj153lee/RMA/datasets/result/260406-ablation/qwen3-oneshot.tsv \
 --host http://localhost:21436
 """
 
@@ -202,6 +203,44 @@ def print_eval(df, title=None, test_type=None, detail=False):
         print(detail_df.to_string(index=False))
 
 
+def init_error_log(error_log_path: Path):
+    error_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(error_log_path, "w", encoding="utf-8"):
+        pass
+
+
+def append_error_log(
+    error_log_path: Path,
+    *,
+    test_key: str,
+    file_name: str,
+    row_idx: int,
+    model_name: str,
+    host: str,
+    error: Exception,
+    prompt: str,
+    raw: str,
+    example: dict,
+):
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "test_key": test_key,
+        "file": file_name,
+        "row_idx": row_idx,
+        "model_name": model_name,
+        "host": host,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "raw_error_type": classify_raw_error(raw),
+        "prompt": prompt,
+        "raw": raw,
+        "example": example,
+    }
+    with open(error_log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False))
+        f.write("\n")
+
+
 def parse_test_keys(test_key_arg, data_files):
     test_keys = [key.strip() for key in test_key_arg.split(",") if key.strip()]
     if not test_keys:
@@ -296,19 +335,88 @@ def generate_text(prompt, model, host, temperature=0.0, num_predict=512):
     return response.json()["response"]
 
 
+def extract_json_block(text: str) -> str:
+    code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if code_block_match:
+        return code_block_match.group(1)
+
+    json_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if json_match:
+        return json_match.group()
+
+    raise ValueError("JSON 블록을 찾을 수 없습니다.")
+
+
+def repair_invalid_json_escapes(text: str) -> str:
+    # Some generations mix JSON booleans/null with Python-style \xNN escapes.
+    return re.sub(
+        r"\\x([0-9a-fA-F]{2})",
+        lambda match: f"\\u00{match.group(1).lower()}",
+        text,
+    )
+
+
+def repair_missing_trailing_braces(text: str) -> str:
+    stripped = text.rstrip()
+    missing_braces = stripped.count("{") - stripped.count("}")
+    if missing_braces <= 0:
+        return text
+    return f"{stripped}{'}' * missing_braces}"
+
+
+def load_json_with_repairs(json_str: str):
+    candidates = [json_str]
+
+    escape_repaired = repair_invalid_json_escapes(json_str)
+    if escape_repaired != json_str:
+        candidates.append(escape_repaired)
+
+    brace_repaired = repair_missing_trailing_braces(json_str)
+    if brace_repaired != json_str:
+        candidates.append(brace_repaired)
+
+    brace_and_escape_repaired = repair_invalid_json_escapes(brace_repaired)
+    if brace_and_escape_repaired not in candidates:
+        candidates.append(brace_and_escape_repaired)
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("JSON parsing failed after all repair attempts.")
+
+
+def classify_raw_error(raw: str) -> str:
+    stripped = (raw or "").strip()
+    if not stripped:
+        return "empty_raw"
+    if "\n{" in stripped or "}\n{" in stripped:
+        return "two_json_objects_newline"
+    if re.search(r"\}\s*,\s*\{", stripped):
+        return "two_objects_comma_split"
+
+    missing_braces = stripped.count("{") - stripped.count("}")
+    if missing_braces > 0:
+        return f"truncated_missing_{missing_braces}_brace"
+    if missing_braces < 0:
+        return f"extra_{abs(missing_braces)}_closing_brace"
+
+    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*-?\d+"', stripped):
+        return "number_then_stray_quote"
+    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*(true|false|null)"', stripped):
+        return "bool_or_null_then_stray_quote"
+    return "other_malformed_json"
+
+
 def extract_json_from_markdown(text):
     try:
-        code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if code_block_match:
-            json_str = code_block_match.group(1)
-        else:
-            json_match = re.search(r"\{.*\}", text, re.DOTALL)
-            json_str = json_match.group() if json_match else None
-
-        if not json_str:
-            raise ValueError("JSON 블록을 찾을 수 없습니다.")
-
-        return json.loads(json_str)
+        json_str = extract_json_block(text)
+        return load_json_with_repairs(json_str)
 
     except Exception as e:
         print("JSON 추출/파싱 실패:", e)
@@ -337,6 +445,10 @@ def parse_oneshot_response(raw_text: str):
 def main():
     args = parse_args()
     apis = read_simple_apis(Path(args.tools_path))
+    out_path = Path(args.o)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    error_log_path = out_path.with_name(f"{out_path.stem}.errors.jsonl")
+    init_error_log(error_log_path)
     prompt_tokenizer_name = resolve_prompt_tokenizer_name(
         model_name=args.model_name,
         prompt_tokenizer_name=args.prompt_tokenizer_name,
@@ -348,6 +460,7 @@ def main():
     print(f"host: {args.host}")
     print(f"prompt_tokenizer_name: {prompt_tokenizer_name}")
     print(f"test_keys: {test_keys}")
+    print(f"error_log_path: {error_log_path}")
 
     all_results = []
     split_results = {key: [] for key in test_keys}
@@ -405,6 +518,18 @@ def main():
                     all_res = "pass" if plan_res == "pass" and arg_res == "pass" else "fail"
                 except Exception as e:
                     result = {"error": str(e)}
+                    append_error_log(
+                        error_log_path,
+                        test_key=test_key,
+                        file_name=file_path.name,
+                        row_idx=row_idx,
+                        model_name=args.model_name,
+                        host=args.host,
+                        error=e,
+                        prompt=prompt,
+                        raw=raw,
+                        example=example,
+                    )
                     print(
                         f"\n[inference_error] test_key={test_key} file={file_path.name} row={row_idx}",
                         flush=True,
@@ -455,8 +580,6 @@ def main():
     print_eval(result_df, title=f"combined={combined_title}", test_type=args.model_name)
     print_turn_macro_summary(result_df, title=f"combined={combined_title}", metric="all")
 
-    out_path = Path(args.o)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_csv(out_path, sep="\t", index=False, encoding="utf-8-sig")
 
 

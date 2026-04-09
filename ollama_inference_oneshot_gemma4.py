@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import requests
 from tqdm import tqdm
 
 
@@ -16,37 +15,34 @@ UTILS_DIR = PROJECT_ROOT / "utils"
 if str(UTILS_DIR) not in sys.path:
     sys.path.insert(0, str(UTILS_DIR))
 
+from generation_backends import (
+    add_text_generation_backend_args,
+    build_text_generation_backend_from_args,
+)
 from oneshot_qwen_prompt import (
     build_oneshot_messages,
     render_chat_template,
     resolve_prompt_tokenizer_name,
 )
 
+
 DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
-DEFAULT_HOST = "http://localhost:11436"
-DEFAULT_MODEL_NAME = "qwen3-oneshot:latest"
-DEFAULT_PROMPT_TOKENIZER_NAME = None
-"""
-python3 /home/hj153lee/RMA/ollama_inference_oneshot.py \
---model_name phi4-oneshot-e6:latest \
---test_key base,complex \
---o /home/hj153lee/RMA/datasets/result/260406-ablation/phi4-e6-oneshot.tsv \
---host http://localhost:21436
-"""
+DEFAULT_HOST = "http://localhost:11437"
+DEFAULT_MODEL_NAME = "gemma-oneshot-rma-gemma4:latest"
+DEFAULT_PROMPT_TOKENIZER_NAME = "google/gemma-4-E2B-it"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Evaluate one-shot RMA models via Ollama with model-matched chat templates."
+        description=(
+            "Evaluate Gemma 4 one-shot RMA models with shared Ollama/HF generation backends."
+        )
     )
+    add_text_generation_backend_args(parser, default_host=DEFAULT_HOST)
     parser.add_argument(
         "--model_name",
         default=DEFAULT_MODEL_NAME,
-        help="Ollama model name to query.",
-    )
-    parser.add_argument(
-        "--host",
-        default=DEFAULT_HOST,
-        help="Ollama host URL.",
+        help="Legacy Ollama model name alias. If --model is unset, this value is used for --backend ollama.",
     )
     parser.add_argument(
         "--tools_path",
@@ -56,7 +52,7 @@ def parse_args():
     parser.add_argument(
         "--prompt_tokenizer_name",
         default=DEFAULT_PROMPT_TOKENIZER_NAME,
-        help="HF tokenizer used to render the chat template. If omitted, infer it from --model_name.",
+        help="HF tokenizer used to render the chat template.",
     )
     parser.add_argument(
         "--test_key",
@@ -67,18 +63,6 @@ def parse_args():
         "--o",
         required=True,
         help="Output TSV path.",
-    )
-    parser.add_argument(
-        "--num_predict",
-        type=int,
-        default=512,
-        help="Maximum generation tokens for Ollama.",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-        help="Sampling temperature for Ollama.",
     )
     return parser.parse_args()
 
@@ -222,9 +206,9 @@ def build_data_files():
     return {
         "base": [
             "datasets/tc/scale/it2_nonNR_tc.tsv",
-            "datasets/tc/scale/it3_nonNR_tc.tsv",
-            "datasets/tc/scale/it4_nonNR_tc.tsv",
-            "datasets/tc/scale/it5_nonNR_tc.tsv",
+            # "datasets/tc/scale/it3_nonNR_tc.tsv",
+            # "datasets/tc/scale/it4_nonNR_tc.tsv",
+            # "datasets/tc/scale/it5_nonNR_tc.tsv",
         ],
         "complex": [
             "datasets/tc/scale/it3_complex_1_tc.tsv",
@@ -276,26 +260,6 @@ def build_oneshot_prompt(example, apis, prompt_tokenizer, prompt_model_name: str
     )
 
 
-def generate_text(prompt, model, host, temperature=0.0, num_predict=512):
-    response = requests.post(
-        f"{host}/api/generate",
-        json={
-            "model": model,
-            "prompt": prompt,
-            "options": {
-                "temperature": temperature,
-                "format": "json",
-                "num_predict": num_predict,
-            },
-            "stream": False,
-        },
-        timeout=300,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"API request failed: {response.text}")
-    return response.json()["response"]
-
-
 def extract_json_from_markdown(text):
     try:
         code_block_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
@@ -336,16 +300,26 @@ def parse_oneshot_response(raw_text: str):
 
 def main():
     args = parse_args()
+    if not args.model:
+        args.model = args.model_name
+
     apis = read_simple_apis(Path(args.tools_path))
+    generation_backend = build_text_generation_backend_from_args(
+        args,
+        default_model_name=DEFAULT_MODEL_NAME,
+    )
+    active_model_name = generation_backend.model_label
     prompt_tokenizer_name = resolve_prompt_tokenizer_name(
-        model_name=args.model_name,
+        model_name=args.model or args.model_name or DEFAULT_MODEL_NAME,
         prompt_tokenizer_name=args.prompt_tokenizer_name,
     )
     prompt_tokenizer = load_prompt_tokenizer(prompt_tokenizer_name)
     data_files = build_data_files()
     test_keys = parse_test_keys(args.test_key, data_files)
-    print(f"model_name: {args.model_name}")
-    print(f"host: {args.host}")
+    print(f"backend: {generation_backend.backend_name}")
+    print(f"generation_model: {active_model_name}")
+    if args.backend == "ollama":
+        print(f"host: {args.host}")
     print(f"prompt_tokenizer_name: {prompt_tokenizer_name}")
     print(f"test_keys: {test_keys}")
 
@@ -384,12 +358,11 @@ def main():
                         print()
                         printed_first_prompt = True
 
-                    raw = generate_text(
+                    raw = generation_backend.generate_text(
                         prompt=prompt,
-                        model=args.model_name,
-                        host=args.host,
                         temperature=args.temperature,
                         num_predict=args.num_predict,
+                        response_format_json=True,
                     )
                     if not printed_first_raw:
                         print("first_inference_raw:")
@@ -426,10 +399,13 @@ def main():
 
                 row = {
                     "test_key": test_key,
+                    "backend_name": generation_backend.backend_name,
+                    "model_name": active_model_name,
                     "conversation_history": example.get("conversation_history"),
                     "query": example.get("query"),
                     "rewrited_query": example.get("rewrited_query"),
                     "candidates": example.get("candidates"),
+                    "raw": raw,
                     "generation": result,
                     "gt": gt,
                     "plan": plan_res,
@@ -442,17 +418,17 @@ def main():
                 split_results[test_key].append(row)
 
             df_file = pd.DataFrame(file_results)
-            print_eval(df_file, title=f"{test_key}/{file_path.name}", test_type=args.model_name)
+            print_eval(df_file, title=f"{test_key}/{file_path.name}", test_type=active_model_name)
             all_results.extend(file_results)
 
     result_df = pd.DataFrame(all_results)
     for test_key in test_keys:
         df_split = pd.DataFrame(split_results[test_key])
-        print_eval(df_split, title=f"split={test_key}", test_type=args.model_name)
+        print_eval(df_split, title=f"split={test_key}", test_type=active_model_name)
         print_turn_macro_summary(df_split, title=f"split={test_key}", metric="all")
 
     combined_title = ",".join(test_keys)
-    print_eval(result_df, title=f"combined={combined_title}", test_type=args.model_name)
+    print_eval(result_df, title=f"combined={combined_title}", test_type=active_model_name)
     print_turn_macro_summary(result_df, title=f"combined={combined_title}", metric="all")
 
     out_path = Path(args.o)

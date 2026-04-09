@@ -3,6 +3,8 @@ import re
 import os
 import requests
 import ast
+from datetime import datetime, timezone
+from pathlib import Path
 from datasets import load_dataset
 from utils.frequently_used_tools import get_arg_parse
 import pdb
@@ -134,6 +136,61 @@ def print_eval(df, title=None, test_type=None, detail=False):
         print("\n# Plan별 Macro Accuracy")
         print(detail_df.to_string(index=False))
 
+def init_error_log(error_log_path: Path):
+    error_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(error_log_path, "w", encoding="utf-8"):
+        pass
+
+
+def classify_raw_error(raw: str) -> str:
+    stripped = (raw or "").strip()
+    if not stripped:
+        return "empty_raw"
+    if "\n{" in stripped or "}\n{" in stripped:
+        return "two_json_objects_newline"
+    if re.search(r"\}\s*,\s*\{", stripped):
+        return "two_objects_comma_split"
+
+    missing_braces = stripped.count("{") - stripped.count("}")
+    if missing_braces > 0:
+        return f"truncated_missing_{missing_braces}_brace"
+    if missing_braces < 0:
+        return f"extra_{abs(missing_braces)}_closing_brace"
+
+    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*-?\d+"', stripped):
+        return "number_then_stray_quote"
+    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*(true|false|null)"', stripped):
+        return "bool_or_null_then_stray_quote"
+    return "other_malformed_json"
+
+
+def append_error_log(
+    error_log_path: Path,
+    *,
+    test_key: str,
+    file_name: str,
+    row_idx: int,
+    model_name: str,
+    host: str,
+    error: Exception,
+    raw: str,
+):
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "test_key": test_key,
+        "file": file_name,
+        "row_idx": row_idx,
+        "model_name": model_name,
+        "host": host,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "raw_error_type": classify_raw_error(raw),
+        "raw": raw,
+    }
+    with open(error_log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False))
+        f.write("\n")
+
 def extract_turn_from_filename(file_name):
     match = re.search(r"it(\d+)", file_name)
     if not match:
@@ -229,6 +286,10 @@ python3 /home/hj153lee/RMA/ollama_inference_multi.py \
 def main(out_file):      
     #apis = read_apis("apis/api_v3.0.1.jsonl", simple=False)    
     sft_apis = read_apis("apis/simple_api.json", simple=True)    
+    out_path = Path(out_file)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    error_log_path = out_path.with_name(f"{out_path.stem}.errors.jsonl")
+    init_error_log(error_log_path)
     test_type_config = {
         "base-phi4": {
             "model_name": "phi4-base:latest",
@@ -339,7 +400,32 @@ def main(out_file):
             "model_name": "phi4-phi-history-1st:latest",
             "prompt_template": SFT_HISTORY_INFERENCE_PHI4,
             "prompt_mode": "base",
-        }
+        },
+        "new-base-phi4-e4": {
+            "model_name": "phi4-phi-history-1st-e4:latest",
+            "prompt_template": SFT_HISTORY_INFERENCE_PHI4,
+            "prompt_mode": "base",
+        },
+        "new-base-phi4-e5": {
+            "model_name": "phi4-phi-history-1st-e5:latest",
+            "prompt_template": SFT_HISTORY_INFERENCE_PHI4,
+            "prompt_mode": "base",
+        },
+        "new-base-phi4-e6": {
+            "model_name": "phi4-phi-history-1st:latest",
+            "prompt_template": SFT_HISTORY_INFERENCE_PHI4,
+            "prompt_mode": "base",
+        },
+        "new-base-llama3": {
+            "model_name": "llama3-llama-history-all_linear:latest",
+            "prompt_template": ZERO_HISTORY_INFERENCE_LLAMA,
+            "prompt_mode": "base",
+        },
+        "new-base-qwen2.5": {
+            "model_name": "qwen25-qwen-history-all_linear:latest",
+            "prompt_template": ZERO_HISTORY_INFERENCE_QWEN25,
+            "prompt_mode": "base",
+        }                 
     }
 
     test_type = args.t
@@ -448,9 +534,10 @@ def main(out_file):
     }
 
     test_keys = parse_test_keys(args.test_key, data_files)
-    
+
     print(model_name)
     print(args.host)
+    print(f"error_log_path: {error_log_path}")
     # 데이터 예시 전처리 함수
     def preprocess_example_it(example, apis, prompt_template, prompt_mode):
         api_str = ""
@@ -505,7 +592,9 @@ def main(out_file):
             #exit(0)
             file_results = []
 
-            for ex in tqdm(proc, desc=f"Processing {test_key}/{os.path.basename(file_path)}"):
+            for row_idx, ex in enumerate(
+                tqdm(proc, desc=f"Processing {test_key}/{os.path.basename(file_path)}")
+            ):
                 prompt = ex["strprompt"]
                 raw = ""
                 gt = {}
@@ -527,6 +616,16 @@ def main(out_file):
                     all_res  = "pass" if plan_res=="pass" and arg_res=="pass" else "fail"
                 except Exception as e:
                     result   = {"error": str(e)}
+                    append_error_log(
+                        error_log_path,
+                        test_key=test_key,
+                        file_name=os.path.basename(file_path),
+                        row_idx=row_idx,
+                        model_name=model_name,
+                        host=args.host,
+                        error=e,
+                        raw=raw,
+                    )
                     print(f"Error: {e}, {raw}")
                     plan_res = "fail"
                     arg_res  = "fail"
@@ -562,7 +661,7 @@ def main(out_file):
     combined_title = ",".join(test_keys)
     print_eval(result, title=f"combined={combined_title}", test_type=model_name)
     print_turn_macro_summary(result, title=f"combined={combined_title}", metric="all")
-    result.to_csv(out_file, sep='\t', index=False, encoding='utf-8-sig')        
+    result.to_csv(out_path, sep='\t', index=False, encoding='utf-8-sig')        
     
 # python3 ollama_inference.py --o datasets/result/base_rewrite_gt.tsv --t rewrite
 if __name__ == "__main__":

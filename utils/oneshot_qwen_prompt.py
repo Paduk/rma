@@ -91,3 +91,14 @@ def render_chat_template(tokenizer, messages, add_generation_prompt: bool, model
     except TypeError:
         kwargs.pop("enable_thinking", None)
         return tokenizer.apply_chat_template(messages, **kwargs)
+
+
+def render_messages_as_plain_text(messages, add_generation_prompt: bool) -> str:
+    sections = []
+    for message in messages:
+        role = str(message.get("role", "")).strip().capitalize() or "User"
+        content = str(message.get("content", "")).strip()
+        sections.append(f"{role}:\n{content}")
+    if add_generation_prompt:
+        sections.append("Assistant:\n")
+    return "\n\n".join(sections)

@@ -4,10 +4,11 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
-import requests
 from tqdm import tqdm
 
 
@@ -18,35 +19,27 @@ if str(UTILS_DIR) not in sys.path:
 
 from oneshot_qwen_prompt import (
     build_oneshot_messages,
-    render_chat_template,
-    resolve_prompt_tokenizer_name,
+    render_messages_as_plain_text,
 )
+from frequently_used_tools import get_model_name
 
 DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
-DEFAULT_HOST = "http://localhost:11436"
-DEFAULT_MODEL_NAME = "qwen3-oneshot:latest"
-DEFAULT_PROMPT_TOKENIZER_NAME = None
+DEFAULT_MODEL_NAME = "o4-mini"
 """
-python3 /home/hj153lee/RMA/ollama_inference_oneshot.py \
---model_name phi4-oneshot-e6:latest \
+python3 /home/hj153lee/RMA/cloudllm_inference_oneshot.py \
+--model o4-mini \
 --test_key base,complex \
---o /home/hj153lee/RMA/datasets/result/260406-ablation/phi4-e6-oneshot.tsv \
---host http://localhost:21436
+--o /home/hj153lee/RMA/datasets/result/260406-ablation/o4-mini-oneshot.tsv
 """
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Evaluate one-shot RMA models via Ollama with model-matched chat templates."
+        description="Evaluate one-shot RMA prompts on cloud LLMs with model-matched chat templates."
     )
     parser.add_argument(
-        "--model_name",
+        "--model",
         default=DEFAULT_MODEL_NAME,
-        help="Ollama model name to query.",
-    )
-    parser.add_argument(
-        "--host",
-        default=DEFAULT_HOST,
-        help="Ollama host URL.",
+        help="Cloud model alias. Example: o4-mini, gpt-5-mini, gpt-4.1-2025-04-14.",
     )
     parser.add_argument(
         "--tools_path",
@@ -55,8 +48,8 @@ def parse_args():
     )
     parser.add_argument(
         "--prompt_tokenizer_name",
-        default=DEFAULT_PROMPT_TOKENIZER_NAME,
-        help="HF tokenizer used to render the chat template. If omitted, infer it from --model_name.",
+        default=None,
+        help="Legacy unused argument kept for CLI compatibility.",
     )
     parser.add_argument(
         "--test_key",
@@ -69,16 +62,10 @@ def parse_args():
         help="Output TSV path.",
     )
     parser.add_argument(
-        "--num_predict",
+        "--max_workers",
         type=int,
-        default=512,
-        help="Maximum generation tokens for Ollama.",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=float,
-        default=0.0,
-        help="Sampling temperature for Ollama.",
+        default=min(8, (os.cpu_count() or 1) * 5),
+        help="Maximum concurrent cloud requests.",
     )
     return parser.parse_args()
 
@@ -180,7 +167,7 @@ def print_eval(df, title=None, test_type=None, detail=False):
 
     print("-" * 40)
 
-    log_path = PROJECT_ROOT / "logs" / "ollama_inference_log.txt"
+    log_path = PROJECT_ROOT / "logs" / "cloud_inference_log.txt"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as f:
         if title:
@@ -218,6 +205,60 @@ def parse_test_keys(test_key_arg, data_files):
     return deduped
 
 
+def init_error_log(error_log_path: Path):
+    error_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(error_log_path, "w", encoding="utf-8"):
+        pass
+
+
+def classify_raw_error(raw: str) -> str:
+    stripped = (raw or "").strip()
+    if not stripped:
+        return "empty_raw"
+    if "\n{" in stripped or "}\n{" in stripped:
+        return "two_json_objects_newline"
+    if re.search(r"\}\s*,\s*\{", stripped):
+        return "two_objects_comma_split"
+
+    missing_braces = stripped.count("{") - stripped.count("}")
+    if missing_braces > 0:
+        return f"truncated_missing_{missing_braces}_brace"
+    if missing_braces < 0:
+        return f"extra_{abs(missing_braces)}_closing_brace"
+
+    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*-?\d+"', stripped):
+        return "number_then_stray_quote"
+    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*(true|false|null)"', stripped):
+        return "bool_or_null_then_stray_quote"
+    return "other_malformed_json"
+
+
+def append_error_log(
+    error_log_path: Path,
+    *,
+    test_key: str,
+    file_name: str,
+    row_idx: int,
+    model_name: str,
+    error: Exception,
+    raw: str,
+):
+    payload = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "test_key": test_key,
+        "file": file_name,
+        "row_idx": row_idx,
+        "model_name": model_name,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "raw_error_type": classify_raw_error(raw),
+        "raw": raw,
+    }
+    with open(error_log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False))
+        f.write("\n")
+
+
 def build_data_files():
     return {
         "base": [
@@ -249,18 +290,7 @@ def parse_literal(raw_value, field_name: str):
     return ast.literal_eval(raw_value)
 
 
-def load_prompt_tokenizer(model_name: str):
-    try:
-        from transformers import AutoTokenizer
-    except ImportError as exc:
-        raise RuntimeError(
-            "transformers is required to render the chat template during inference."
-        ) from exc
-
-    return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-
-
-def build_oneshot_prompt(example, apis, prompt_tokenizer, prompt_model_name: str) -> str:
+def build_oneshot_prompt(example, apis) -> str:
     candidates = parse_literal(example["candidates"], "candidates")
     messages = build_oneshot_messages(
         conversation_history=example["conversation_history"],
@@ -268,33 +298,10 @@ def build_oneshot_prompt(example, apis, prompt_tokenizer, prompt_model_name: str
         candidates=candidates,
         apis=apis,
     )
-    return render_chat_template(
-        tokenizer=prompt_tokenizer,
+    return render_messages_as_plain_text(
         messages=messages,
         add_generation_prompt=True,
-        model_name=prompt_model_name,
     )
-
-
-def generate_text(prompt, model, host, temperature=0.0, num_predict=512):
-    response = requests.post(
-        f"{host}/api/generate",
-        json={
-            "model": model,
-            "prompt": prompt,
-            "options": {
-                "temperature": temperature,
-                "format": "json",
-                "num_predict": num_predict,
-            },
-            "stream": False,
-        },
-        timeout=300,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"API request failed: {response.text}")
-    return response.json()["response"]
-
 
 def extract_json_from_markdown(text):
     try:
@@ -334,20 +341,82 @@ def parse_oneshot_response(raw_text: str):
     return result
 
 
+def process_example(
+    example,
+    *,
+    row_idx,
+    test_key,
+    file_path,
+    apis,
+    generate_response,
+    model_name,
+):
+    prompt = ""
+    raw = ""
+    gt = {}
+    error_payload = None
+
+    try:
+        prompt = build_oneshot_prompt(
+            example,
+            apis,
+        )
+        response = generate_response("", [prompt])[0]
+        raw = response.get("text", "")
+        if not raw:
+            raise ValueError("Empty response text")
+
+        result = parse_oneshot_response(raw)
+        gt = parse_literal(example["answer"], "answer")
+        plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
+        arg_res = "pass" if result.get("arguments") == gt.get("arguments") else "fail"
+        all_res = "pass" if plan_res == "pass" and arg_res == "pass" else "fail"
+    except Exception as e:
+        result = {"error": str(e)}
+        plan_res = "fail"
+        arg_res = "fail"
+        all_res = "fail"
+        error_payload = {
+            "test_key": test_key,
+            "file_name": file_path.name,
+            "row_idx": row_idx,
+            "model_name": model_name,
+            "error": e,
+            "raw": raw,
+        }
+
+    row = {
+        "row_idx": row_idx,
+        "test_key": test_key,
+        "conversation_history": example.get("conversation_history"),
+        "query": example.get("query"),
+        "rewrited_query": example.get("rewrited_query"),
+        "candidates": example.get("candidates"),
+        "generation": result,
+        "gt": gt,
+        "plan": plan_res,
+        "arguments": arg_res,
+        "all": all_res,
+        "file": file_path.name,
+        "turn": extract_turn_from_filename(file_path.name),
+    }
+    return row, error_payload, prompt, raw
+
+
 def main():
     args = parse_args()
     apis = read_simple_apis(Path(args.tools_path))
-    prompt_tokenizer_name = resolve_prompt_tokenizer_name(
-        model_name=args.model_name,
-        prompt_tokenizer_name=args.prompt_tokenizer_name,
-    )
-    prompt_tokenizer = load_prompt_tokenizer(prompt_tokenizer_name)
+    model_name, generate_response = get_model_name(args.model)
     data_files = build_data_files()
     test_keys = parse_test_keys(args.test_key, data_files)
-    print(f"model_name: {args.model_name}")
-    print(f"host: {args.host}")
-    print(f"prompt_tokenizer_name: {prompt_tokenizer_name}")
+    out_path = Path(args.o)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    error_log_path = out_path.with_name(f"{out_path.stem}.errors.jsonl")
+    init_error_log(error_log_path)
+    print(f"model_name: {model_name}")
+    print("prompt_style: plain_text_messages")
     print(f"test_keys: {test_keys}")
+    print(f"error_log_path: {error_log_path}")
 
     all_results = []
     split_results = {key: [] for key in test_keys}
@@ -363,100 +432,106 @@ def main():
             examples = df.to_dict("records")
 
             file_results = []
+            futures = {}
+            max_workers = max(1, args.max_workers)
 
-            for row_idx, example in enumerate(
-                tqdm(examples, desc=f"Processing {test_key}/{file_path.name}")
-            ):
-                prompt = ""
-                raw = ""
-                gt = {}
-
-                try:
-                    prompt = build_oneshot_prompt(
-                        example,
-                        apis,
-                        prompt_tokenizer=prompt_tokenizer,
-                        prompt_model_name=prompt_tokenizer_name,
-                    )
-                    if not printed_first_prompt:
-                        print("first_inference_prompt:")
-                        print(prompt)
-                        print()
-                        printed_first_prompt = True
-
-                    raw = generate_text(
-                        prompt=prompt,
-                        model=args.model_name,
-                        host=args.host,
-                        temperature=args.temperature,
-                        num_predict=args.num_predict,
-                    )
-                    if not printed_first_raw:
-                        print("first_inference_raw:")
-                        print(raw)
-                        print()
-                        printed_first_raw = True
-
-                    result = parse_oneshot_response(raw)
-
-                    gt = parse_literal(example["answer"], "answer")
-                    plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
-                    arg_res = "pass" if result.get("arguments") == gt.get("arguments") else "fail"
-                    all_res = "pass" if plan_res == "pass" and arg_res == "pass" else "fail"
-                except Exception as e:
-                    result = {"error": str(e)}
+            if examples:
+                first_row, first_error_payload, first_prompt, first_raw = process_example(
+                    examples[0],
+                    row_idx=0,
+                    test_key=test_key,
+                    file_path=file_path,
+                    apis=apis,
+                    generate_response=generate_response,
+                    model_name=model_name,
+                )
+                if not printed_first_prompt:
+                    print("first_inference_prompt:")
+                    print(first_prompt)
+                    print()
+                    printed_first_prompt = True
+                if not printed_first_raw:
+                    print("first_inference_raw:")
+                    print(first_raw)
+                    print()
+                    printed_first_raw = True
+                file_results.append(first_row)
+                split_results[test_key].append(first_row)
+                if first_error_payload is not None:
+                    append_error_log(error_log_path, **first_error_payload)
                     print(
-                        f"\n[inference_error] test_key={test_key} file={file_path.name} row={row_idx}",
+                        f"\n[inference_error] test_key={test_key} file={file_path.name} row=0",
                         flush=True,
                     )
-                    print(f"type={type(e).__name__}", flush=True)
-                    print(f"message={e}", flush=True)
-                    if prompt:
+                    print(f"type={type(first_error_payload['error']).__name__}", flush=True)
+                    print(f"message={first_error_payload['error']}", flush=True)
+                    if first_prompt:
                         print("prompt:", flush=True)
-                        print(prompt, flush=True)
-                    if raw:
+                        print(first_prompt, flush=True)
+                    if first_raw:
                         print("raw:", flush=True)
-                        print(raw, flush=True)
+                        print(first_raw, flush=True)
                     else:
                         print("raw: <empty>", flush=True)
                     print(flush=True)
-                    plan_res = "fail"
-                    arg_res = "fail"
-                    all_res = "fail"
 
-                row = {
-                    "test_key": test_key,
-                    "conversation_history": example.get("conversation_history"),
-                    "query": example.get("query"),
-                    "rewrited_query": example.get("rewrited_query"),
-                    "candidates": example.get("candidates"),
-                    "generation": result,
-                    "gt": gt,
-                    "plan": plan_res,
-                    "arguments": arg_res,
-                    "all": all_res,
-                    "file": file_path.name,
-                    "turn": extract_turn_from_filename(file_path.name),
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        process_example,
+                        example,
+                        row_idx=row_idx,
+                        test_key=test_key,
+                        file_path=file_path,
+                        apis=apis,
+                        generate_response=generate_response,
+                        model_name=model_name,
+                    ): row_idx
+                    for row_idx, example in enumerate(examples[1:], start=1)
                 }
-                file_results.append(row)
-                split_results[test_key].append(row)
+                for future in tqdm(
+                    as_completed(futures),
+                    total=len(futures),
+                    desc=f"Processing {test_key}/{file_path.name}",
+                ):
+                    row, error_payload, prompt, raw = future.result()
+                    file_results.append(row)
+                    split_results[test_key].append(row)
+                    if error_payload is not None:
+                        append_error_log(error_log_path, **error_payload)
+                        print(
+                            f"\n[inference_error] test_key={test_key} file={file_path.name} row={error_payload['row_idx']}",
+                            flush=True,
+                        )
+                        print(f"type={type(error_payload['error']).__name__}", flush=True)
+                        print(f"message={error_payload['error']}", flush=True)
+                        if prompt:
+                            print("prompt:", flush=True)
+                            print(prompt, flush=True)
+                        if raw:
+                            print("raw:", flush=True)
+                            print(raw, flush=True)
+                        else:
+                            print("raw: <empty>", flush=True)
+                        print(flush=True)
 
             df_file = pd.DataFrame(file_results)
-            print_eval(df_file, title=f"{test_key}/{file_path.name}", test_type=args.model_name)
-            all_results.extend(file_results)
+            if not df_file.empty:
+                df_file = df_file.sort_values("row_idx").reset_index(drop=True)
+            split_results[test_key] = sorted(split_results[test_key], key=lambda row: row["row_idx"])
+            print_eval(df_file, title=f"{test_key}/{file_path.name}", test_type=model_name)
+            all_results.extend(df_file.to_dict("records"))
 
     result_df = pd.DataFrame(all_results)
     for test_key in test_keys:
         df_split = pd.DataFrame(split_results[test_key])
-        print_eval(df_split, title=f"split={test_key}", test_type=args.model_name)
+        print_eval(df_split, title=f"split={test_key}", test_type=model_name)
         print_turn_macro_summary(df_split, title=f"split={test_key}", metric="all")
 
     combined_title = ",".join(test_keys)
-    print_eval(result_df, title=f"combined={combined_title}", test_type=args.model_name)
+    print_eval(result_df, title=f"combined={combined_title}", test_type=model_name)
     print_turn_macro_summary(result_df, title=f"combined={combined_title}", metric="all")
 
-    out_path = Path(args.o)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     result_df.to_csv(out_path, sep="\t", index=False, encoding="utf-8-sig")
 
 
