@@ -23,18 +23,21 @@ class OpenAiGenerateResponse(GenerateResponse):
     client: OpenAI
     model: str
     system_prompt: str
+    reasoning_effort: Optional[str]
     total_prompt_tokens: int
     total_completion_tokens: int
     total_cost: float
     
-    def __init__(self, client: OpenAI, model: str, system_prompt: str):
+    def __init__(self, client: OpenAI, model: str, system_prompt: str, reasoning_effort: Optional[str] = None):
         super().__init__()
         self.client = client
         self.model = model
         self.system_prompt = system_prompt
+        self.reasoning_effort = reasoning_effort
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_cost = 0.0
+        self.print_cost = True
 
     def update(self, prompt_tokens: int, completion_tokens: int):
         # 모델별 가격 설정 (2025년 4월 기준)
@@ -45,6 +48,10 @@ class OpenAiGenerateResponse(GenerateResponse):
             'gpt-4.1-2025-04-14': {'prompt': 0.002, 'completion': 0.008},
             'gpt-4o-mini-2024-07-18': {'prompt': 0.00015, 'completion': 0.0006},
             'gpt-5.1': {'prompt': 0.00125, 'completion': 0.01},
+            'gpt-5.4': {'prompt': 0.0025, 'completion': 0.015},
+            'gpt-5.4-mini': {'prompt': 0.00075, 'completion': 0.0045},
+            'gpt-5.4-nano': {'prompt': 0.0002, 'completion': 0.00125},
+            'gpt-5.4-2026-03-05': {'prompt': 0.0025, 'completion': 0.015},
             'gpt-5-mini': {'prompt': 0.00025, 'completion': 0.002},
             'gpt-5-nano': {'prompt': 0.00005, 'completion': 0.0004}
         }
@@ -68,8 +75,9 @@ class OpenAiGenerateResponse(GenerateResponse):
         self.total_cost += current_cost
 
         # 현재 호출의 비용과 누적 비용 출력
-        print(f"현재 호출 비용: ${current_cost:.6f} USD")
-        print(f"누적 비용: ${self.total_cost:.6f} USD")
+        if self.print_cost:
+            print(f"현재 호출 비용: ${current_cost:.6f} USD")
+            print(f"누적 비용: ${self.total_cost:.6f} USD")
         log_entry = (
             f"Prompt tokens: {prompt_tokens}, Completion tokens: {completion_tokens}, "
             f"Current Cost: ${current_cost:.6f}, Total Cost: ${self.total_cost:.6f}\n"
@@ -84,14 +92,17 @@ class OpenAiGenerateResponse(GenerateResponse):
         responses = []
         for query in queries:
             prompt = f"{prefix} {query}"
-            completion = self.client.chat.completions.create(
-                model = self.model,
-                messages = [
+            request_kwargs = {
+                "model": self.model,
+                "messages": [
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": prompt}
                 ],
-                # **kwargs
-            )
+            }
+            if self.reasoning_effort is not None:
+                request_kwargs["reasoning_effort"] = self.reasoning_effort
+
+            completion = self.client.chat.completions.create(**request_kwargs)
             # print('## hj153lee ##')            
             # print(prompt)
             
@@ -156,6 +167,7 @@ class GoogleGenerateResponse(GenerateResponseBase):
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost = 0.0
+        self.print_cost = True
 
     def generate_responses(self, queries: list[str]) -> list[dict]:
         """

@@ -7,9 +7,17 @@ import os
 from openai import OpenAI
 from utils import OpenAiGenerateResponse, GoogleGenerateResponse
 
-def get_model_name(arg_model):
+def get_model_name(arg_model, reasoning_effort=None):
     if arg_model == 'o3':
         model_name = 'o3-mini'
+    elif arg_model == 'gpt-5.4':
+        model_name = 'gpt-5.4'
+    elif arg_model == 'gpt-5.4-mini':
+        model_name = 'gpt-5.4-mini'
+    elif arg_model == 'gpt-5.4-nano':
+        model_name = 'gpt-5.4-nano'
+    elif arg_model == 'gpt-5.4-2026-03-05':
+        model_name = 'gpt-5.4-2026-03-05'
     elif arg_model == 'gpt-5.1':
         model_name = 'gpt-5.1'
     elif arg_model == 'gpt-5-mini':
@@ -33,9 +41,14 @@ def get_model_name(arg_model):
 
     if 'gemini' in model_name:
         generate_response = GoogleGenerateResponse(model_name=model_name)    
-    elif model_name in ['o3-mini', 'o4-mini', 'gpt-4.1-2025-04-14', 'gpt-4o-mini-2024-07-18', 'gpt-5.1', 'gpt-5-mini', 'gpt-5-nano']:
+    elif model_name in ['o3-mini', 'o4-mini', 'gpt-4.1-2025-04-14', 'gpt-4o-mini-2024-07-18', 'gpt-5.1', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.4-2026-03-05', 'gpt-5-mini', 'gpt-5-nano']:
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", None), base_url="https://api.openai.com/v1",)
-        generate_response = OpenAiGenerateResponse(client=client, model=model_name, system_prompt="")
+        generate_response = OpenAiGenerateResponse(
+            client=client,
+            model=model_name,
+            system_prompt="",
+            reasoning_effort=reasoning_effort,
+        )
 
     return model_name, generate_response
 
@@ -78,6 +91,20 @@ def get_arg_parse():
     parser.add_argument('--api', type=str, default="apis/api_v3.0.1.jsonl", help='사용자 이름')
     parser.add_argument('--test_key', type=str, default="", help='')
     parser.add_argument('--host', type=str, default="http://localhost:11436", help='Ollama host URL')
+    parser.add_argument(
+        '--prompt_option',
+        type=str,
+        default='prompt1',
+        choices=['prompt1', 'prompt2'],
+        help='Prompt variant for scripts that support prompt ablations.',
+    )
+    parser.add_argument(
+        '--reasoning_effort',
+        type=str,
+        default=None,
+        choices=['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+        help='OpenAI reasoning effort for supported reasoning models.',
+    )
     args = parser.parse_args()
 
     return args

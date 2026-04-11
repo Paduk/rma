@@ -3,10 +3,9 @@ import re
 import os
 import requests
 import ast
-from datetime import datetime, timezone
+import argparse
 from pathlib import Path
 from datasets import load_dataset
-from utils.frequently_used_tools import get_arg_parse
 import pdb
 import pandas as pd
 from tqdm import tqdm
@@ -17,6 +16,124 @@ from train.gemma_prompts import SFT_REWRITE_INFERENCE_GEMMA, SFT_HISTORY_INFEREN
 from train.llama_prompts import SFT_REWRITE_INFERENCE_PHI4, SFT_HISTORY_INFERENCE_PHI4, ZERO_REWRITE_INFERENCE_PHI4, ZERO_HISTORY_INFERENCE_PHI4
 from train.llama_prompts import SFT_REWRITE_INFERENCE_QWEN25, SFT_HISTORY_INFERENCE_QWEN25, ZERO_REWRITE_INFERENCE_QWEN25, ZERO_HISTORY_INFERENCE_QWEN25
 from train.llama_prompts import SFT_REWRITE_INFERENCE_QWEN3, SFT_HISTORY_INFERENCE_QWEN3, ZERO_REWRITE_INFERENCE_QWEN3, ZERO_HISTORY_INFERENCE_QWEN3
+
+GENERIC_SYSTEM_HISTORY_PROMPT = (
+    "You are a helpful assistant capable of selecting appropriate tools based on "
+    "user queries and generating corresponding parameters. Use information from "
+    "the conversation history when relevant. Only use parameter values that are "
+    "explicitly stated or can be reasonably inferred from the query. If no tool "
+    "matches the query, set the tool to 'None'.\n <|tool|>{tools}<|/tool|>"
+)
+
+GENERIC_SYSTEM_REWRITE_PROMPT = (
+    "Given a user query and a list of available tools, select the most "
+    "appropriate tool and generate the corresponding parameters. If no tool "
+    "matches the query, set the tool to 'None'. Only use parameter values that "
+    "are explicitly stated or can be reasonably inferred from the query.\n "
+    "<|tool|>{tools}<|/tool|>"
+)
+
+GLM_STOP_SEQUENCES = [
+    "<|observation|>",
+    "<|system|>",
+    "<|user|>",
+    "<|assistant|>",
+    "<|endoftext|>",
+]
+
+GENERIC_PROMPT_PROFILES = {
+    "glm-edge-1.5b": {
+        "prompt_model_name": "zai-org/glm-edge-1.5b-chat",
+        "prefix": "all_linear",
+    },
+    "glm-edge-4b": {
+        "prompt_model_name": "zai-org/glm-edge-4b-chat",
+        "prefix": "all_linear",
+        "stop": GLM_STOP_SEQUENCES,
+    },
+    "smollm2-1.7b": {
+        "prompt_model_name": "HuggingFaceTB/SmolLM2-1.7B",
+        "prefix": "simple_template",
+    },
+    "smollm2-1.7b-instruct": {
+        "prompt_model_name": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+        "prefix": "all_linear",
+    },
+    "smollm3-3b": {
+        "prompt_model_name": "HuggingFaceTB/SmolLM3-3B",
+        "prefix": "all_linear",
+    },
+    "falcon3-1b": {
+        "prompt_model_name": "tiiuae/Falcon3-1B-Instruct",
+        "prefix": "all_linear",
+    },
+    "falcon3-1b-base": {
+        "prompt_model_name": "tiiuae/Falcon3-1B-Base",
+        "prefix": "simple_template",
+    },
+    "falcon3-3b": {
+        "prompt_model_name": "tiiuae/Falcon3-3B-Instruct",
+        "prefix": "all_linear",
+    },
+    "falcon3-3b-base": {
+        "prompt_model_name": "tiiuae/Falcon3-3B-Base",
+        "prefix": "simple_template",
+    },
+    "exaone4-1.2b": {
+        "prompt_model_name": "LGAI-EXAONE/EXAONE-4.0-1.2B",
+        "prefix": "all_linear",
+    },
+    "olmo2-1b": {
+        "prompt_model_name": "allenai/OLMo-2-0425-1B",
+        "prefix": "simple_template",
+    },
+    "olmo2-1b-instruct": {
+        "prompt_model_name": "allenai/OLMo-2-0425-1B-Instruct",
+        "prefix": "all_linear",
+    },
+    "granite3.3-2b": {
+        "prompt_model_name": "ibm-granite/granite-3.3-2b-instruct",
+        "prefix": "all_linear",
+    },
+    "lfm2.5-1.2b": {
+        "prompt_model_name": "LiquidAI/LFM2.5-1.2B-Instruct",
+        "prefix": "all_linear",
+    },
+}
+
+
+def get_arg_parse():
+    parser = argparse.ArgumentParser(description="Ollama inference for RMA SFT models")
+    parser.add_argument('--t', type=str, required=False, help='target_file')
+    parser.add_argument('--o', type=str, required=False, help='out_file')
+    parser.add_argument('--t1', type=str, required=False, help='target_file')
+    parser.add_argument('--t2', type=str, required=False, help='target_file')
+    parser.add_argument('--step', type=str, required=False, help='out_file')
+    parser.add_argument('--it', type=str, required=False, help='iteration_file')
+    parser.add_argument('--model', type=str, required=False, help='Ollama model name override')
+    parser.add_argument('--t_list', type=str, nargs='+', required=False, help='List of iteration files')
+    parser.add_argument('--d', action='store_true', help='Enable debug mode')
+    parser.add_argument('--s', type=str, required=False, help='start_file')
+    parser.add_argument('--api', type=str, default="apis/api_v3.0.1.jsonl", help='사용자 이름')
+    parser.add_argument('--test_key', type=str, default="", help='')
+    parser.add_argument('--host', type=str, default="http://localhost:11436", help='Ollama host URL')
+    parser.add_argument(
+        '--prompt_option',
+        type=str,
+        default='prompt1',
+        choices=['prompt1', 'prompt2'],
+        help='Prompt variant for scripts that support prompt ablations.',
+    )
+    parser.add_argument(
+        '--reasoning_effort',
+        type=str,
+        default=None,
+        choices=['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+        help='OpenAI reasoning effort for supported reasoning models.',
+    )
+    return parser.parse_args()
+
+
 # /mnt/data/.cache/hj153lee/huggingface/hub/models--microsoft--Phi-4-mini-instruct/snapshots/5a149550068a1eb93398160d8953f5f56c3603e9/
 def read_apis(api_file, simple=False):
     """
@@ -68,21 +185,163 @@ def extract_json_from_markdown(text):
         # print(text)
         return None
 
+
+def sanitize_model_slug(model_name):
+    lower_name = model_name.lower()
+    if "qwen3" in lower_name:
+        return "qwen3"
+    if "qwen2.5" in lower_name or "qwen25" in lower_name:
+        return "qwen25"
+    if "phi-4" in lower_name or "phi4" in lower_name:
+        return "phi4"
+    if "llama" in lower_name:
+        return "llama3"
+    if "gemma" in lower_name:
+        return "gemma"
+    sanitized = re.sub(r"[^a-z0-9]+", "-", model_name.split("/")[-1].lower()).strip("-")
+    return sanitized or "model"
+
+
+def infer_generic_ollama_model_name(profile_name, prompt_model_name, train_type, prefix):
+    model_slug = sanitize_model_slug(prompt_model_name)
+    return f"{model_slug}-{profile_name}-{train_type}-{prefix}:latest"
+
+
+def build_generic_test_type_configs():
+    configs = {}
+    for profile_name, profile_config in GENERIC_PROMPT_PROFILES.items():
+        prompt_model_name = profile_config["prompt_model_name"]
+        prefix = profile_config["prefix"]
+        for train_type in ("history", "rewrite"):
+            config = {
+                "model_name": infer_generic_ollama_model_name(
+                    profile_name,
+                    prompt_model_name,
+                    train_type,
+                    prefix,
+                ),
+                "prompt_renderer": "chat_template",
+                "prompt_model_name": prompt_model_name,
+                "prompt_mode": train_type,
+                "chat_template_fallback": "simple",
+            }
+            if profile_config.get("stop"):
+                config["stop"] = profile_config["stop"]
+            if train_type == "history":
+                configs[f"history-{profile_name}"] = config
+                configs[f"base-{profile_name}"] = config
+            else:
+                configs[f"rewrite-{profile_name}"] = config
+    return configs
+
+
+def render_chat_template(tokenizer, messages, add_generation_prompt):
+    kwargs = {
+        "tokenize": False,
+        "add_generation_prompt": add_generation_prompt,
+        "enable_thinking": False,
+    }
+    try:
+        return tokenizer.apply_chat_template(messages, **kwargs)
+    except TypeError:
+        kwargs.pop("enable_thinking", None)
+        return tokenizer.apply_chat_template(messages, **kwargs)
+
+
+def render_simple_inference_prompt(system_msg, user_content):
+    return (
+        f"System:\n{system_msg}\n\n"
+        f"User:\n{user_content}\n\n"
+        "Assistant:\n"
+    )
+
+
+def build_generic_prompt_fields(example, api_str, prompt_mode):
+    if prompt_mode in ("base", "history"):
+        system_msg = GENERIC_SYSTEM_HISTORY_PROMPT.format(tools=api_str)
+        user_content = (
+            f"Conversation History: {example['conversation_history']}\n"
+            f"User Query: {example['query']}"
+        )
+    elif prompt_mode == "rewrite":
+        system_msg = GENERIC_SYSTEM_REWRITE_PROMPT.format(tools=api_str)
+        user_content = f"User Query: {example['rewrited_query']}"
+    else:
+        raise ValueError(f"Unsupported prompt_mode: {prompt_mode}")
+    return system_msg, user_content
+
+
+def render_generic_inference_prompt(
+    example,
+    api_str,
+    tokenizer,
+    prompt_mode,
+    chat_template_fallback,
+):
+    system_msg, user_content = build_generic_prompt_fields(example, api_str, prompt_mode)
+    if getattr(tokenizer, "chat_template", None):
+        return render_chat_template(
+            tokenizer,
+            [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_content},
+            ],
+            add_generation_prompt=True,
+        )
+
+    if chat_template_fallback == "error":
+        raise ValueError(
+            "Tokenizer does not define chat_template. Use simple fallback only for "
+            "models that were trained with --chat_template_fallback simple."
+        )
+    return render_simple_inference_prompt(system_msg, user_content)
+
+
+def load_prompt_tokenizer(config):
+    from transformers import AutoTokenizer
+
+    prompt_model_name = config["prompt_model_name"]
+    tokenizer = AutoTokenizer.from_pretrained(
+        prompt_model_name,
+        trust_remote_code=True,
+    )
+    return tokenizer
+
+
+def truncate_at_stop_markers(text, stop_markers=None):
+    if not stop_markers or not isinstance(text, str):
+        return text
+
+    cut_idx = len(text)
+    for marker in stop_markers:
+        if not marker:
+            continue
+        marker_idx = text.find(marker)
+        if marker_idx != -1:
+            cut_idx = min(cut_idx, marker_idx)
+
+    return text[:cut_idx].strip()
+
+
 # Ollama API 호출 함수
 #def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11434'):
-def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11435'): # qwen3
+def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11435', stop=None): # qwen3
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "format": "json",
+        "options": {
+            "temperature": 0.0,
+            "num_predict": 512,
+        },
+        "stream": False
+    }
+    if stop:
+        payload["options"]["stop"] = stop
+
     response = requests.post(
         f"{host}/api/generate",
-        json={
-            "model": model,
-            "prompt": prompt,
-            "options": {
-                "temperature": 0.0,
-                "format": "json",
-                "num_predict": 512               
-            },
-            "stream": False
-        },
+        json=payload,
     )
     
     if response.status_code == 200:
@@ -135,61 +394,6 @@ def print_eval(df, title=None, test_type=None, detail=False):
         detail_df["macro_by_plan"] = macro_by_plan.round(2)
         print("\n# Plan별 Macro Accuracy")
         print(detail_df.to_string(index=False))
-
-def init_error_log(error_log_path: Path):
-    error_log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(error_log_path, "w", encoding="utf-8"):
-        pass
-
-
-def classify_raw_error(raw: str) -> str:
-    stripped = (raw or "").strip()
-    if not stripped:
-        return "empty_raw"
-    if "\n{" in stripped or "}\n{" in stripped:
-        return "two_json_objects_newline"
-    if re.search(r"\}\s*,\s*\{", stripped):
-        return "two_objects_comma_split"
-
-    missing_braces = stripped.count("{") - stripped.count("}")
-    if missing_braces > 0:
-        return f"truncated_missing_{missing_braces}_brace"
-    if missing_braces < 0:
-        return f"extra_{abs(missing_braces)}_closing_brace"
-
-    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*-?\d+"', stripped):
-        return "number_then_stray_quote"
-    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*(true|false|null)"', stripped):
-        return "bool_or_null_then_stray_quote"
-    return "other_malformed_json"
-
-
-def append_error_log(
-    error_log_path: Path,
-    *,
-    test_key: str,
-    file_name: str,
-    row_idx: int,
-    model_name: str,
-    host: str,
-    error: Exception,
-    raw: str,
-):
-    payload = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "test_key": test_key,
-        "file": file_name,
-        "row_idx": row_idx,
-        "model_name": model_name,
-        "host": host,
-        "error_type": type(error).__name__,
-        "error_message": str(error),
-        "raw_error_type": classify_raw_error(raw),
-        "raw": raw,
-    }
-    with open(error_log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False))
-        f.write("\n")
 
 def extract_turn_from_filename(file_name):
     match = re.search(r"it(\d+)", file_name)
@@ -288,8 +492,6 @@ def main(out_file):
     sft_apis = read_apis("apis/simple_api.json", simple=True)    
     out_path = Path(out_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    error_log_path = out_path.with_name(f"{out_path.stem}.errors.jsonl")
-    init_error_log(error_log_path)
     test_type_config = {
         "base-phi4": {
             "model_name": "phi4-base:latest",
@@ -427,6 +629,7 @@ def main(out_file):
             "prompt_mode": "base",
         }                 
     }
+    test_type_config.update(build_generic_test_type_configs())
 
     test_type = args.t
     config = test_type_config.get(test_type)
@@ -434,9 +637,10 @@ def main(out_file):
         valid_test_types = ", ".join(sorted(test_type_config.keys()))
         raise ValueError(f"Invalid test type: {test_type}. Available test types: {valid_test_types}")
 
-    model_name = config["model_name"]
-    prompt_template = config["prompt_template"]
-    prompt_mode = config["prompt_mode"]
+    model_name = args.model or config["model_name"]
+    prompt_tokenizer = None
+    if config.get("prompt_renderer") == "chat_template":
+        prompt_tokenizer = load_prompt_tokenizer(config)
 
     
     '''
@@ -537,16 +741,25 @@ def main(out_file):
 
     print(model_name)
     print(args.host)
-    print(f"error_log_path: {error_log_path}")
     # 데이터 예시 전처리 함수
-    def preprocess_example_it(example, apis, prompt_template, prompt_mode):
+    def preprocess_example_it(example, apis, config, prompt_tokenizer=None):
         api_str = ""
         #re_fmt  = {"plan": "str type tool", "arguments": {"key1": "value1"}}        
         for plan in ast.literal_eval(example["candidates"]):
             api_data = apis[plan].copy()
             api_str += f"{plan}: {api_data}\n"
-        
-        if prompt_mode == "base":
+
+        prompt_mode = config["prompt_mode"]
+        if config.get("prompt_renderer") == "chat_template":
+            prompt = render_generic_inference_prompt(
+                example=example,
+                api_str=api_str,
+                tokenizer=prompt_tokenizer,
+                prompt_mode=prompt_mode,
+                chat_template_fallback=config.get("chat_template_fallback", "simple"),
+            )
+        elif prompt_mode in ("base", "history"):
+            prompt_template = config["prompt_template"]
             prompt = prompt_template.format(
                 tools=api_str,
                 #re_format=json.dumps(re_fmt, ensure_ascii=False, indent=2),
@@ -554,6 +767,7 @@ def main(out_file):
                 data=example["query"]
             )
         elif prompt_mode == "rewrite":
+            prompt_template = config["prompt_template"]
             prompt = prompt_template.format(
                 tools=api_str,
                 #re_format=json.dumps(re_fmt, ensure_ascii=False, indent=2),                
@@ -581,7 +795,12 @@ def main(out_file):
             ds = load_dataset('csv', data_files={'tc':[file_path]}, delimiter='\t')['tc']
             # 전처리
             proc = ds.map(
-                partial(preprocess_example_it, apis=sft_apis, prompt_template=prompt_template, prompt_mode=prompt_mode)
+                partial(
+                    preprocess_example_it,
+                    apis=sft_apis,
+                    config=config,
+                    prompt_tokenizer=prompt_tokenizer,
+                )
             )
             # else:
             #     proc = ds.map(
@@ -598,14 +817,27 @@ def main(out_file):
                 prompt = ex["strprompt"]
                 raw = ""
                 gt = {}
+                parse_error = ""
 
                 try:
-                    raw = generate_text(prompt, model=model_name, host=args.host)
+                    raw = generate_text(
+                        prompt,
+                        model=model_name,
+                        host=args.host,
+                        stop=config.get("stop"),
+                    )
+                    parse_source = truncate_at_stop_markers(raw, config.get("stop"))
                     #result = ast.literal_eval(raw)
                     try:
-                        result = ast.literal_eval(raw)
-                    except:
-                        result = extract_json_from_markdown(raw)
+                        result = ast.literal_eval(parse_source)
+                    except Exception as parse_exc:
+                        result = extract_json_from_markdown(parse_source)
+                        if result is None:
+                            parse_error = str(parse_exc)
+                            raise ValueError(f"Failed to parse model output: {parse_error}")
+
+                    if not isinstance(result, dict):
+                        raise ValueError(f"Parsed model output is not a dict: {type(result).__name__}")
 
                     gt = ast.literal_eval(ex["stranswer"])
                     if type(gt) == str:
@@ -616,16 +848,8 @@ def main(out_file):
                     all_res  = "pass" if plan_res=="pass" and arg_res=="pass" else "fail"
                 except Exception as e:
                     result   = {"error": str(e)}
-                    append_error_log(
-                        error_log_path,
-                        test_key=test_key,
-                        file_name=os.path.basename(file_path),
-                        row_idx=row_idx,
-                        model_name=model_name,
-                        host=args.host,
-                        error=e,
-                        raw=raw,
-                    )
+                    if not parse_error:
+                        parse_error = str(e)
                     print(f"Error: {e}, {raw}")
                     plan_res = "fail"
                     arg_res  = "fail"
@@ -637,7 +861,9 @@ def main(out_file):
                     "query":                ex.get("query"),
                     "rewrited_query":       ex.get("rewrited_query"),
                     "candidates":           ex.get("candidates"),
+                    "raw_generation":       raw,
                     "generation":           result,
+                    "parse_error":          parse_error,
                     "gt":                   gt,
                     "plan":                 plan_res,
                     "arguments":            arg_res,

@@ -20,7 +20,8 @@ from generation_backends import (
     build_text_generation_backend_from_args,
 )
 from oneshot_qwen_prompt import (
-    build_oneshot_messages,
+    build_api_str_from_candidates,
+    build_user_content,
     render_chat_template,
     resolve_prompt_tokenizer_name,
 )
@@ -28,8 +29,31 @@ from oneshot_qwen_prompt import (
 
 DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
 DEFAULT_HOST = "http://localhost:11437"
-DEFAULT_MODEL_NAME = "gemma-oneshot-rma-gemma4:latest"
+DEFAULT_MODEL_NAME = "gemma-oneshot-rma-rewrite-first-block-gemma4:latest"
 DEFAULT_PROMPT_TOKENIZER_NAME = "google/gemma-4-E2B-it"
+PRIMARY_QUERY_FIELD = "rewritten_query"
+TAG_SEQUENCE = (PRIMARY_QUERY_FIELD, "plan", "arguments")
+TAGGED_ONESHOT_SYSTEM_PROMPT = (
+    "Given a conversation history, a user query, and a list of available tools, "
+    "first rewrite the query by resolving only ambiguous pronouns or omitted "
+    "references using the conversation history. If there are no ambiguous "
+    "pronouns or omitted references, rewritten_query may be identical to the "
+    "user query. Then, based on the rewritten_query, select the most appropriate "
+    "tool and generate its arguments. Return the answer using exactly these "
+    "three sections in this order:\n"
+    "<rewritten_query>\n"
+    "...rewritten query...\n"
+    "</rewritten_query>\n"
+    "<plan>\n"
+    "...tool name or None...\n"
+    "</plan>\n"
+    "<arguments>\n"
+    "...compact JSON object...\n"
+    "</arguments>\n"
+    "Always include all three sections. The content inside <arguments> must be "
+    "a valid compact JSON object. If no tool matches the request, set the plan "
+    "to None and the arguments object to {}."
+)
 
 
 def parse_args():
@@ -246,12 +270,20 @@ def load_prompt_tokenizer(model_name: str):
 
 def build_oneshot_prompt(example, apis, prompt_tokenizer, prompt_model_name: str) -> str:
     candidates = parse_literal(example["candidates"], "candidates")
-    messages = build_oneshot_messages(
-        conversation_history=example["conversation_history"],
-        query=example["query"],
-        candidates=candidates,
-        apis=apis,
-    )
+    api_str = build_api_str_from_candidates(candidates, apis)
+    messages = [
+        {
+            "role": "system",
+            "content": f"{TAGGED_ONESHOT_SYSTEM_PROMPT}\n<|tool|>{api_str}<|/tool|>",
+        },
+        {
+            "role": "user",
+            "content": build_user_content(
+                example["conversation_history"],
+                example["query"],
+            ),
+        },
+    ]
     return render_chat_template(
         tokenizer=prompt_tokenizer,
         messages=messages,
@@ -279,7 +311,111 @@ def extract_json_from_markdown(text):
         return None
 
 
+def extract_tagged_section(text: str, tag: str, following_tags: tuple[str, ...]) -> str | None:
+    start_match = re.search(rf"<{tag}>", text, re.IGNORECASE)
+    if not start_match:
+        return None
+
+    start = start_match.end()
+    end_match = re.search(rf"</{tag}>", text[start:], re.IGNORECASE | re.DOTALL)
+    if end_match:
+        end = start + end_match.start()
+        return text[start:end].strip()
+
+    next_positions = []
+    for next_tag in following_tags:
+        next_match = re.search(rf"<{next_tag}>", text[start:], re.IGNORECASE)
+        if next_match:
+            next_positions.append(start + next_match.start())
+    end = min(next_positions) if next_positions else len(text)
+    return text[start:end].strip()
+
+
+def extract_first_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+
+    if depth > 0 and text[start:].strip().startswith("{"):
+        return text[start:] + ("}" * depth)
+    return None
+
+
+def parse_arguments_block(arguments_text: str) -> dict:
+    candidate = arguments_text.strip()
+    if not candidate:
+        raise ValueError("arguments block is empty.")
+    if candidate.startswith("[") and candidate.endswith("]"):
+        candidate = "{}"
+
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        candidate = extract_first_json_object(candidate)
+        if not candidate:
+            raise ValueError("No JSON object found in arguments block.")
+        parsed = json.loads(candidate)
+
+    if not isinstance(parsed, dict):
+        raise ValueError("arguments block did not parse to a dict.")
+    return parsed
+
+
+def extract_rewritten_query_section(raw_text: str) -> str:
+    section = extract_tagged_section(raw_text, PRIMARY_QUERY_FIELD, TAG_SEQUENCE[1:])
+    if section is not None:
+        return section
+    raise ValueError(f"Missing <{PRIMARY_QUERY_FIELD}> section.")
+
+
+def get_ground_truth_rewritten_query(example) -> str | None:
+    value = example.get(PRIMARY_QUERY_FIELD)
+    if isinstance(value, str):
+        return value
+    value = example.get("rewrited_query")
+    if isinstance(value, str):
+        return value
+    return None
+
+
 def parse_oneshot_response(raw_text: str):
+    rewritten_query = extract_tagged_section(raw_text, PRIMARY_QUERY_FIELD, TAG_SEQUENCE[1:])
+    if rewritten_query is not None:
+        sections = {PRIMARY_QUERY_FIELD: rewritten_query}
+        for idx, tag in enumerate(TAG_SEQUENCE[1:], start=1):
+            section = extract_tagged_section(raw_text, tag, TAG_SEQUENCE[idx + 1 :])
+            if section is None:
+                raise ValueError(f"Missing <{tag}> section.")
+            sections[tag] = section
+        return {
+            PRIMARY_QUERY_FIELD: sections[PRIMARY_QUERY_FIELD],
+            "plan": sections["plan"],
+            "arguments": parse_arguments_block(sections["arguments"]),
+        }
+
     try:
         parsed = ast.literal_eval(raw_text)
     except Exception:
@@ -289,7 +425,7 @@ def parse_oneshot_response(raw_text: str):
         raise ValueError("Parsed response is not a dict.")
 
     result = {
-        "rewrited_query": parsed.get("rewrited_query"),
+        PRIMARY_QUERY_FIELD: parsed.get(PRIMARY_QUERY_FIELD, parsed.get("rewrited_query")),
         "plan": parsed.get("plan"),
         "arguments": parsed.get("arguments", {}),
     }
@@ -362,7 +498,7 @@ def main():
                         prompt=prompt,
                         temperature=args.temperature,
                         num_predict=args.num_predict,
-                        response_format_json=True,
+                        response_format_json=False,
                     )
                     if not printed_first_raw:
                         print("first_inference_raw:")
@@ -403,9 +539,12 @@ def main():
                     "model_name": active_model_name,
                     "conversation_history": example.get("conversation_history"),
                     "query": example.get("query"),
-                    "rewrited_query": example.get("rewrited_query"),
+                    "rewritten_query": get_ground_truth_rewritten_query(example),
+                    "rewrited_query": get_ground_truth_rewritten_query(example),
+                    "pred_rewritten_query": result.get(PRIMARY_QUERY_FIELD),
                     "candidates": example.get("candidates"),
                     "raw": raw,
+                    "raw_generated": raw,
                     "generation": result,
                     "gt": gt,
                     "plan": plan_res,

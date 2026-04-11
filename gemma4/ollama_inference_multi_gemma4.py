@@ -3,7 +3,6 @@ import ast
 import json
 import os
 import re
-from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 
@@ -359,6 +358,98 @@ def parse_python_call(text: str):
     return {"plan": expr.func.id, "arguments": arguments}
 
 
+def extract_tagged_section(text: str, tag: str, following_tags: tuple[str, ...]) -> str | None:
+    start_match = re.search(rf"<{tag}>", text, re.IGNORECASE)
+    if not start_match:
+        return None
+
+    start = start_match.end()
+    end_match = re.search(rf"</{tag}>", text[start:], re.IGNORECASE | re.DOTALL)
+    if end_match:
+        end = start + end_match.start()
+        return text[start:end].strip()
+
+    next_positions = []
+    for next_tag in following_tags:
+        next_match = re.search(rf"<{next_tag}>", text[start:], re.IGNORECASE)
+        if next_match:
+            next_positions.append(start + next_match.start())
+    end = min(next_positions) if next_positions else len(text)
+    return text[start:end].strip()
+
+
+def extract_first_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+
+    if depth > 0 and text[start:].strip().startswith("{"):
+        return text[start:] + ("}" * depth)
+    return None
+
+
+def parse_arguments_block(arguments_text: str):
+    candidate = arguments_text.strip()
+    if not candidate:
+        return None
+    if candidate.startswith("[") and candidate.endswith("]"):
+        candidate = "{}"
+
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        candidate = extract_first_json_object(candidate)
+        if not candidate:
+            return None
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            return None
+
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+def parse_tagged_plan_arguments(text: str, candidate_plans):
+    plan = extract_tagged_section(text, "plan", ("arguments",))
+    arguments_text = extract_tagged_section(text, "arguments", ())
+    if plan is None or arguments_text is None:
+        return None
+
+    arguments = parse_arguments_block(arguments_text)
+    if not isinstance(arguments, dict):
+        return None
+
+    return {
+        "plan": normalize_plan_name(plan, candidate_plans),
+        "arguments": arguments,
+    }
+
+
 def parse_strict_json_result(raw: str, candidate_plans=None):
     stripped = (raw or "").strip()
     if not stripped:
@@ -378,6 +469,10 @@ def parse_generation_result(raw: str, candidate_plans=None, apis=None):
     stripped = (raw or "").strip()
     if not stripped:
         return None
+
+    parsed = parse_tagged_plan_arguments(stripped, candidate_plans)
+    if isinstance(parsed, dict):
+        return parsed
 
     try:
         parsed = ast.literal_eval(stripped)
@@ -500,67 +595,6 @@ def print_eval(df, title=None, test_type=None, detail=False):
         )
         detail_df["macro_by_plan"] = detail_df[list(metrics)].mean(axis=1).round(2)
         print(detail_df.to_string(index=False))
-
-
-def init_error_log(error_log_path: Path):
-    error_log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(error_log_path, "w", encoding="utf-8"):
-        pass
-
-
-def classify_raw_error(raw: str) -> str:
-    stripped = (raw or "").strip()
-    if not stripped:
-        return "empty_raw"
-    if "\n{" in stripped or "}\n{" in stripped:
-        return "two_json_objects_newline"
-    if re.search(r"\}\s*,\s*\{", stripped):
-        return "two_objects_comma_split"
-
-    missing_braces = stripped.count("{") - stripped.count("}")
-    if missing_braces > 0:
-        return f"truncated_missing_{missing_braces}_brace"
-    if missing_braces < 0:
-        return f"extra_{abs(missing_braces)}_closing_brace"
-
-    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*-?\d+"', stripped):
-        return "number_then_stray_quote"
-    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*(true|false|null)"', stripped):
-        return "bool_or_null_then_stray_quote"
-    return "other_malformed_json"
-
-
-def append_error_log(
-    error_log_path: Path,
-    *,
-    test_key: str,
-    file_name: str,
-    row_idx: int,
-    backend_name: str,
-    model_name: str,
-    host: str | None,
-    error: Exception,
-    raw: str,
-    prompt: str,
-):
-    payload = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "test_key": test_key,
-        "file": file_name,
-        "row_idx": row_idx,
-        "backend_name": backend_name,
-        "model_name": model_name,
-        "host": host or "",
-        "error_type": type(error).__name__,
-        "error_message": str(error),
-        "raw_error_type": classify_raw_error(raw),
-        "raw": raw,
-        "prompt": prompt,
-    }
-    with open(error_log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False))
-        f.write("\n")
-
 
 def extract_turn_from_filename(file_name):
     match = re.search(r"it(\d+)", file_name)
@@ -702,8 +736,6 @@ def main():
     sft_apis = read_apis(args.api, simple=True)
     out_path = Path(args.o)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    error_log_path = out_path.with_name(f"{out_path.stem}.errors.jsonl")
-    init_error_log(error_log_path)
     debug_case_tsv_path = (
         Path(args.debug_case_tsv)
         if args.debug_case_tsv
@@ -731,7 +763,6 @@ def main():
     print(f"generation_model: {active_model_name}")
     if args.backend == "ollama":
         print(args.host)
-    print(f"error_log_path: {error_log_path}")
 
     all_results = []
     split_results = {key: [] for key in test_keys}
@@ -809,18 +840,6 @@ def main():
                     all_res = "pass" if plan_res == "pass" and arg_res == "pass" else "fail"
                 except Exception as e:
                     result = {"error": str(e)}
-                    append_error_log(
-                        error_log_path,
-                        test_key=test_key,
-                        file_name=os.path.basename(file_path),
-                        row_idx=row_idx,
-                        backend_name=generation_backend.backend_name,
-                        model_name=active_model_name,
-                        host=args.host if args.backend == "ollama" else None,
-                        error=e,
-                        raw=raw,
-                        prompt=prompt,
-                    )
                     print(f"Error: {e}, {raw}")
                     error_message = str(e)
                     plan_res = "fail"
@@ -836,6 +855,7 @@ def main():
                     "rewrited_query": ex.get("rewrited_query"),
                     "candidates": ex.get("candidates"),
                     "raw": raw,
+                    "raw_generated": raw,
                     "generation": result,
                     "gt": gt,
                     "plan": plan_res,
@@ -860,6 +880,7 @@ def main():
                             "candidates": serialize_for_tsv(ast.literal_eval(ex["candidates"])),
                             "prompt": prompt,
                             "raw": raw,
+                            "raw_generated": raw,
                             "parsed_generation": serialize_for_tsv(result),
                             "gt": serialize_for_tsv(gt),
                             "parse_ok": parse_ok,

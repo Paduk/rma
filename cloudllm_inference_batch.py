@@ -14,6 +14,7 @@ from filter import JsonExtractor
 from functools import partial
 from utils.oneshot_qwen_prompt import (
     build_api_str_from_candidates,
+    build_history_few_shot_messages,
     render_messages_as_plain_text,
 )
 
@@ -32,6 +33,21 @@ def print_first_inference_preview(*, script_name: str, test_key: str, file_name:
     print("response:")
     print(raw or "<empty>")
     print()
+
+
+def disable_per_request_cost_print(generate_response):
+    if hasattr(generate_response, "print_cost"):
+        generate_response.print_cost = False
+
+
+def print_file_cumulative_cost(*, generate_response, test_key: str, file_name: str):
+    total_cost = getattr(generate_response, "total_cost", None)
+    if total_cost is None:
+        return
+    print(
+        f"[Cost] test_key={test_key} file={file_name} cumulative_cost=${total_cost:.6f} USD",
+        flush=True,
+    )
 
 
 def process_example(
@@ -131,11 +147,34 @@ def parse_response_json(text):
     return json.loads(match.group())
 
 
+def compute_plan_macro(df, metric="all"):
+    if df.empty:
+        return float("nan")
+
+    gt_plan_series = df["gt"].apply(
+        lambda x: x.get("plan") if isinstance(x, dict) else None
+    )
+    metric_by_plan = (
+        pd.DataFrame({"gt_plan": gt_plan_series, metric: df[metric]})
+        .dropna(subset=["gt_plan"])
+        .groupby("gt_plan")[metric]
+        .apply(lambda sub: sub.eq("pass").mean())
+    )
+    return metric_by_plan.mean()
+
+
 def print_eval(df, title=None, test_type=None, detail=False):
     if title: print(f"\n## Performance for {title}\n")
+    metric_rows = []
     for col in ("plan","arguments","all"):
-        acc = round((df[col]=="pass").mean(), 2)
-        print(f"{col.title():<10} Accuracy : {acc}")
+        if col == "all":
+            acc = compute_plan_macro(df, metric=col)
+            label = f"{col.title():<10} Macro Accuracy"
+        else:
+            acc = (df[col] == "pass").mean()
+            label = f"{col.title():<10} Accuracy"
+        metric_rows.append((label, acc))
+        print(f"{label} : {acc * 100:.2f}%")
     print("-"*40)
 
     if title is None:
@@ -143,9 +182,8 @@ def print_eval(df, title=None, test_type=None, detail=False):
     with open("logs/cloud_inference_log.txt", 'a', encoding='utf-8') as f:
         if title:
             f.write(f"\n## Performance for {title}, {test_type}\n")
-        for col in ("plan", "arguments", "all"):
-            acc = round((df[col] == "pass").mean(), 2)
-            f.write(f"{col.title():<10} Accuracy : {acc}\n")
+        for label, acc in metric_rows:
+            f.write(f"{label} : {acc * 100:.2f}%\n")
         f.write("-" * 40 + "\n")
 
     if detail:
@@ -257,7 +295,19 @@ def extract_json_from_markdown(text):
         return None
 
 
-def build_batch_system_message(api_str: str, test_type: str) -> str:
+def build_batch_system_message(api_str: str, test_type: str, prompt_option: str = "prompt1") -> str:
+    if test_type == "history" and prompt_option == "prompt2":
+        return (
+            "Given a conversation history, a user query, and a list of available tools, "
+            "select the most appropriate tool and generate its arguments. "
+            "Only use parameter values that are explicitly stated or can be reasonably inferred "
+            "from the query or conversation history. Return compact JSON only with keys "
+            "\"plan\" and \"arguments\". Always include both keys. The value of "
+            "\"arguments\" must always be an object. If no tool matches the request, "
+            "set \"plan\" to \"None\" and \"arguments\" to {}.\n"
+            "Below are a few examples. Learn the pattern of tool selection from them. "
+            "Do not copy their contents."
+        )
     if test_type == "history":
         return (
             "Given a conversation history, a user query, and a list of available tools, "
@@ -294,13 +344,24 @@ def build_batch_user_content(example, test_type: str) -> str:
     raise ValueError(f"Unsupported test_type: {test_type}")
 
 
-def build_batch_prompt(example, apis, test_type: str) -> str:
+def build_batch_prompt(example, apis, test_type: str, prompt_option: str = "prompt1") -> str:
     candidates = ast.literal_eval(example["candidates"])
     api_str = build_api_str_from_candidates(candidates, apis)
-    messages = [
-        {"role": "system", "content": build_batch_system_message(api_str, test_type)},
-        {"role": "user", "content": build_batch_user_content(example, test_type)},
-    ]
+    messages = [{"role": "system", "content": build_batch_system_message(api_str, test_type, prompt_option=prompt_option)}]
+    if test_type == "history" and prompt_option == "prompt2":
+        messages.extend(build_history_few_shot_messages())
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Now solve the actual task. Use only the following available tools.\n"
+                    f"<|tool|>{api_str}<|/tool|>\n"
+                    f"{build_batch_user_content(example, test_type)}"
+                ),
+            }
+        )
+    else:
+        messages.append({"role": "user", "content": build_batch_user_content(example, test_type)})
     return render_messages_as_plain_text(
         messages=messages,
         add_generation_prompt=True,
@@ -310,7 +371,8 @@ def main(out_file):
     # API 데이터 파일 경로 (환경에 맞게 수정)
     args = get_arg_parse()
     print(args)
-    model_name, generate_response = get_model_name(args.model)    
+    model_name, generate_response = get_model_name(args.model, args.reasoning_effort)
+    disable_per_request_cost_print(generate_response)
     out_path = Path(out_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     error_log_path = out_path.with_name(f"{out_path.stem}.errors.jsonl")
@@ -320,7 +382,9 @@ def main(out_file):
     
     test_type = args.t # 'rewrite'  # 'rewrite' or 'history'
     print(f"error_log_path: {error_log_path}")
+    print(f"reasoning_effort: {args.reasoning_effort}")
     print("prompt_style: plain_text_messages")
+    print(f"prompt_option: {args.prompt_option}")
     # python3 cloudllm_inference_batch.py --model gpt-5-nano --t rewrite --o datasets/rewrite-gpt5-nano-complex.tsv && python3 cloudllm_inference_batch.py --model gpt-5-nano --t rewrite --o datasets/rewrite-gpt5-nano-base.tsv
     # python3 cloudllm_inference_batch.py --model gpt-5-nano --t history --o datasets/history-gpt5-nano-complex.tsv && python3 cloudllm_inference_batch.py --model gpt-5-nano --t history --o datasets/history-gpt5-nano-base.tsv
     # python3 cloudllm_inference_batch.py --model gpt-4.1-2025-04-14 --t rewrite --o datasets/manual/rewrite-cloud-gpt41.tsv
@@ -355,11 +419,12 @@ def main(out_file):
     test_keys = parse_test_keys(args.test_key, data_files)
         
     # 데이터 예시 전처리 함수
-    def preprocess_example_it(example, apis, prompt_template, test_type):
+    def preprocess_example_it(example, apis, prompt_template, test_type, prompt_option):
         prompt = build_batch_prompt(
             example,
             apis,
             test_type=test_type,
+            prompt_option=prompt_option,
         )
         return {
             "strprompt":    prompt,
@@ -380,7 +445,13 @@ def main(out_file):
         for file_path in data_files[test_key]:
             ds = load_dataset('csv', data_files={'tc':[file_path]}, delimiter='\t')['tc']
             proc = ds.map(
-                partial(preprocess_example_it, apis=apis, prompt_template=None, test_type=test_type)
+                partial(
+                    preprocess_example_it,
+                    apis=apis,
+                    prompt_template=None,
+                    test_type=test_type,
+                    prompt_option=args.prompt_option,
+                )
             )
             file_results = []
             max_workers = min(8, os.cpu_count() * 5)  # I/O 바운드이므로 cpu_count * 상수
@@ -452,6 +523,11 @@ def main(out_file):
 
             df_file = pd.DataFrame(file_results)
             print_eval(df_file, title=f"{test_key}/{os.path.basename(file_path)}", test_type=test_type)
+            print_file_cumulative_cost(
+                generate_response=generate_response,
+                test_key=test_key,
+                file_name=os.path.basename(file_path),
+            )
             all_results.extend(file_results)
 
     result = pd.DataFrame(all_results)    

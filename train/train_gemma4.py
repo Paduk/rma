@@ -39,7 +39,7 @@ from gemma4_legacy_prompting import (
     LEGACY_SYSTEM_REWRITE_PROMPT,
     apply_chat_template,
 )
-from planner_json_utils import serialize_answer_to_json
+from planner_json_utils import normalize_answer_to_dict
 from postprocess_gemma4 import (
     DEFAULT_GEMMA4_LLAMA_CPP_DIR,
     POSTPROCESS_STAGE_CHOICES,
@@ -458,6 +458,118 @@ def build_api_str(example, apis):
     return api_str
 
 
+def build_planner_target_text(answer) -> str:
+    normalized = normalize_answer_to_dict(answer)
+
+    plan = normalized.get("plan", "None")
+    arguments = normalized.get("arguments", {})
+    if not isinstance(arguments, dict):
+        raise ValueError("answer['arguments'] must be a dict.")
+
+    arguments_json = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    return "\n".join(
+        [
+            "<plan>",
+            plan,
+            "</plan>",
+            "<arguments>",
+            arguments_json,
+            "</arguments>",
+        ]
+    )
+
+
+def extract_tagged_section(text: str, tag: str, following_tags: tuple[str, ...]) -> str | None:
+    start_match = re.search(rf"<{tag}>", text, re.IGNORECASE)
+    if not start_match:
+        return None
+
+    start = start_match.end()
+    end_match = re.search(rf"</{tag}>", text[start:], re.IGNORECASE | re.DOTALL)
+    if end_match:
+        end = start + end_match.start()
+        return text[start:end].strip()
+
+    next_positions = []
+    for next_tag in following_tags:
+        next_match = re.search(rf"<{next_tag}>", text[start:], re.IGNORECASE)
+        if next_match:
+            next_positions.append(start + next_match.start())
+    end = min(next_positions) if next_positions else len(text)
+    return text[start:end].strip()
+
+
+def extract_first_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+
+    if depth > 0 and text[start:].strip().startswith("{"):
+        return text[start:] + ("}" * depth)
+    return None
+
+
+def parse_arguments_block(arguments_text: str) -> dict:
+    candidate = arguments_text.strip()
+    if not candidate:
+        raise ValueError("arguments block is empty.")
+
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        candidate = extract_first_json_object(candidate)
+        if not candidate:
+            raise ValueError("No JSON object found in arguments block.")
+        parsed = json.loads(candidate)
+
+    if not isinstance(parsed, dict):
+        raise ValueError("arguments block did not parse to a dict.")
+    return parsed
+
+
+def parse_planner_target_text(raw_text: str) -> dict:
+    plan = extract_tagged_section(raw_text, "plan", ("arguments",))
+    arguments_text = extract_tagged_section(raw_text, "arguments", ())
+
+    if plan is None or arguments_text is None:
+        parsed = json.loads(raw_text)
+        if not isinstance(parsed, dict):
+            raise ValueError("Planner target text did not parse to a dict.")
+        if "plan" not in parsed or "arguments" not in parsed:
+            raise ValueError("Planner target text must contain plan and arguments.")
+        if not isinstance(parsed["arguments"], dict):
+            raise ValueError("Planner target arguments must be a dict.")
+        return parsed
+
+    return {
+        "plan": plan,
+        "arguments": parse_arguments_block(arguments_text),
+    }
+
+
 def print_max_total_length(processed_train):
     max_total_length = 0
     for example in processed_train:
@@ -676,7 +788,7 @@ class MultiSampleGenerationProbeCallback(TrainerCallback):
                 parsed_json = None
                 parse_error = ""
                 try:
-                    parsed_json = json.loads(raw_text)
+                    parsed_json = parse_planner_target_text(raw_text)
                 except Exception as exc:
                     parse_ok = False
                     parse_error = str(exc)
@@ -768,7 +880,7 @@ def maybe_build_generation_probe_callback(args, tokenizer, processed_train, outp
     for sample_idx in sample_indices:
         sample = processed_train[sample_idx]
         try:
-            expected_json = json.loads(sample["stranswer"])
+            expected_json = parse_planner_target_text(sample["stranswer"])
         except Exception:
             expected_json = None
         samples.append(
@@ -820,7 +932,7 @@ def make_preprocess_fn(tokenizer, apis, train_type: str, max_len: int):
             system_msg = LEGACY_SYSTEM_REWRITE_PROMPT.format(tools=api_str)
             user_content = f"User Query: {example['rewrited_query']}"
 
-        assistant_content = serialize_answer_to_json(example["answer"])
+        assistant_content = build_planner_target_text(example["answer"])
 
         prompt_messages = [
             {"role": "system", "content": system_msg},

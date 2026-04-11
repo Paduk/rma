@@ -206,8 +206,25 @@ def select_prompt_template(model_name: str) -> str:
     raise ValueError(f"Unsupported model_name for prompt template: {model_name}")
 
 
+def uses_all_linear_lora(model_name: str) -> bool:
+    lower_name = model_name.lower()
+    all_linear_markers = (
+        "phi-4",
+        "phi4",
+        "qwen",
+        "glm-edge",
+        "smollm",
+        "falcon3",
+        "exaone",
+        "olmo",
+        "granite",
+        "lfm",
+    )
+    return any(marker in lower_name for marker in all_linear_markers)
+
+
 def build_lora_config(model_name: str) -> LoraConfig:
-    if "Phi-4" in model_name or "Qwen" in model_name:
+    if uses_all_linear_lora(model_name):
         return LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=16,

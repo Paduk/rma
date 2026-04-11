@@ -3,7 +3,6 @@ import ast
 import json
 import math
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -14,8 +13,7 @@ from train.llama_prompts import SFT_REWRITE_INFERENCE_PHI4
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_DIR = BASE_DIR / "datasets" / "tc" / "oneshot_test"
-DEFAULT_OUTPUT = BASE_DIR / "datasets" / "result" / "oneshot_test" / "phi4_rewrite_oneshot_eval.tsv"
+DEFAULT_OUTPUT_DIR = BASE_DIR / "datasets" / "result" / "oneshot_test"
 DEFAULT_API_FILE = BASE_DIR / "apis" / "simple_api.json"
 DEFAULT_LOG_FILE = BASE_DIR / "logs" / "ollama_inference_log.txt"
 MODEL_NAME = "phi4-rewrite:latest"
@@ -24,14 +22,9 @@ PROMPT_TEMPLATE = SFT_REWRITE_INFERENCE_PHI4
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate oneshot rewrite datasets with phi4-rewrite.")
-    parser.add_argument("--o", type=str, default=str(DEFAULT_OUTPUT), help="Output TSV path")
+    parser.add_argument("--input_file", type=str, required=True, help="Input TSV file path")
+    parser.add_argument("--o", type=str, default="", help="Output TSV path")
     parser.add_argument("--host", type=str, default="http://localhost:11436", help="Ollama host URL")
-    parser.add_argument(
-        "--data_dir",
-        type=str,
-        default=str(DEFAULT_DATA_DIR),
-        help="Directory containing oneshot TSV files",
-    )
     parser.add_argument(
         "--api_file",
         type=str,
@@ -46,70 +39,12 @@ def read_apis(api_file: Path):
         return json.load(f)
 
 
-def init_error_log(error_log_path: Path):
-    error_log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(error_log_path, "w", encoding="utf-8"):
-        pass
-
-
 def append_log_line(log_file: Path, text: str):
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(text)
         if not text.endswith("\n"):
             f.write("\n")
-
-
-def classify_raw_error(raw: str) -> str:
-    stripped = (raw or "").strip()
-    if not stripped:
-        return "empty_raw"
-    if "\n{" in stripped or "}\n{" in stripped:
-        return "two_json_objects_newline"
-    if re.search(r"\}\s*,\s*\{", stripped):
-        return "two_objects_comma_split"
-
-    missing_braces = stripped.count("{") - stripped.count("}")
-    if missing_braces > 0:
-        return f"truncated_missing_{missing_braces}_brace"
-    if missing_braces < 0:
-        return f"extra_{abs(missing_braces)}_closing_brace"
-
-    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*-?\d+"', stripped):
-        return "number_then_stray_quote"
-    if re.search(r'"[A-Za-z0-9_]+"\s*:\s*(true|false|null)"', stripped):
-        return "bool_or_null_then_stray_quote"
-    return "other_malformed_json"
-
-
-def append_error_log(
-    error_log_path: Path,
-    *,
-    dataset_name: str,
-    test_key: str,
-    source_file: str,
-    row_idx: int,
-    model_name: str,
-    host: str,
-    error: Exception,
-    raw: str,
-):
-    payload = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "dataset_name": dataset_name,
-        "test_key": test_key,
-        "source_file": source_file,
-        "row_idx": row_idx,
-        "model_name": model_name,
-        "host": host,
-        "error_type": type(error).__name__,
-        "error_message": str(error),
-        "raw_error_type": classify_raw_error(raw),
-        "raw": raw,
-    }
-    with open(error_log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False))
-        f.write("\n")
 
 
 def parse_literal(value):
@@ -309,7 +244,13 @@ def build_prompt(row, apis):
     )
 
 
-def evaluate_file(df, *, dataset_name, apis, host, error_log_path):
+def resolve_output_path(input_file: Path, output_arg: str) -> Path:
+    if output_arg:
+        return Path(output_arg)
+    return DEFAULT_OUTPUT_DIR / f"{input_file.stem}.tsv"
+
+
+def evaluate_file(df, *, dataset_name, apis, host):
     file_results = []
     prompt_preview_printed = False
 
@@ -340,17 +281,6 @@ def evaluate_file(df, *, dataset_name, apis, host, error_log_path):
             all_res = "pass" if plan_res == "pass" and arg_res == "pass" else "fail"
         except Exception as e:
             result = {"error": str(e)}
-            append_error_log(
-                error_log_path,
-                dataset_name=dataset_name,
-                test_key=str(test_key),
-                source_file=str(source_file),
-                row_idx=row_idx,
-                model_name=MODEL_NAME,
-                host=host,
-                error=e,
-                raw=raw,
-            )
             print(f"Error in {dataset_name} row {row_idx}: {e}")
             plan_res = "fail"
             arg_res = "fail"
@@ -380,66 +310,44 @@ def evaluate_file(df, *, dataset_name, apis, host, error_log_path):
 def main():
     args = parse_args()
 
-    data_dir = Path(args.data_dir)
-    out_path = Path(args.o)
+    input_file = Path(args.input_file)
+    output_path = resolve_output_path(input_file, args.o)
     api_file = Path(args.api_file)
-    error_log_path = out_path.with_name(f"{out_path.stem}.errors.jsonl")
 
-    if not data_dir.exists():
-        raise FileNotFoundError(f"Data directory not found: {data_dir}")
+    if not input_file.exists():
+        raise FileNotFoundError(f"Input file not found: {input_file}")
     if not api_file.exists():
         raise FileNotFoundError(f"API file not found: {api_file}")
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    init_error_log(error_log_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     apis = read_apis(api_file)
-    tsv_files = sorted(data_dir.glob("*.tsv"))
-    if not tsv_files:
-        raise FileNotFoundError(f"No TSV files found under: {data_dir}")
 
     print(MODEL_NAME)
     print(args.host)
-    print(f"error_log_path: {error_log_path}")
-    print(f"dataset_dir: {data_dir}")
+    print(f"input_file: {input_file}")
+    print(f"output_file: {output_path}")
 
-    all_results = []
-    results_by_dataset = {}
-    results_by_test_key = {}
+    print(f"\n# Running dataset: {input_file.name}")
+    df = pd.read_csv(input_file, sep="\t", keep_default_na=False)
+    dataset_results = evaluate_file(
+        df,
+        dataset_name=input_file.name,
+        apis=apis,
+        host=args.host,
+    )
 
-    for tsv_file in tsv_files:
-        print(f"\n# Running dataset: {tsv_file.name}")
-        df = pd.read_csv(tsv_file, sep="\t", keep_default_na=False)
-        dataset_results = evaluate_file(
-            df,
-            dataset_name=tsv_file.name,
-            apis=apis,
-            host=args.host,
-            error_log_path=error_log_path,
-        )
+    dataset_df = pd.DataFrame(dataset_results)
+    print_eval(dataset_df, title=f"dataset={input_file.name}", log_file=DEFAULT_LOG_FILE, test_type=MODEL_NAME)
+    print_turn_macro_summary(dataset_df, title=f"dataset={input_file.name}")
 
-        dataset_df = pd.DataFrame(dataset_results)
-        results_by_dataset[tsv_file.name] = dataset_df
-        print_eval(dataset_df, title=f"dataset={tsv_file.name}", log_file=DEFAULT_LOG_FILE, test_type=MODEL_NAME)
-
-        for row in dataset_results:
-            test_key = row["test_key"]
-            results_by_test_key.setdefault(test_key, []).append(row)
-
-        all_results.extend(dataset_results)
-
-    for dataset_name, dataset_df in results_by_dataset.items():
-        print_turn_macro_summary(dataset_df, title=f"dataset={dataset_name}")
-
-    for test_key, rows in sorted(results_by_test_key.items()):
+    for test_key, rows in sorted(dataset_df.groupby("test_key"), key=lambda x: x[0]):
         split_df = pd.DataFrame(rows)
         print_eval(split_df, title=f"split={test_key}", log_file=DEFAULT_LOG_FILE, test_type=MODEL_NAME)
         print_turn_macro_summary(split_df, title=f"split={test_key}")
 
-    result_df = pd.DataFrame(all_results)
-    print_eval(result_df, title="combined=all", log_file=DEFAULT_LOG_FILE, test_type=MODEL_NAME)
-    print_turn_macro_summary(result_df, title="combined=all")
-    result_df.to_csv(out_path, sep="\t", index=False, encoding="utf-8-sig")
+    dataset_df.to_csv(output_path, sep="\t", index=False, encoding="utf-8-sig")
+    print(f"saved: {output_path}")
 
 
 if __name__ == "__main__":

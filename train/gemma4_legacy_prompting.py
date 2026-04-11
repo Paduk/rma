@@ -1,9 +1,17 @@
 from __future__ import annotations
 
-try:
-    from .planner_json_utils import STRICT_JSON_OUTPUT_INSTRUCTION
-except ImportError:
-    from planner_json_utils import STRICT_JSON_OUTPUT_INSTRUCTION
+TAGGED_PLANNER_OUTPUT_INSTRUCTION = (
+    "Return the answer using exactly these two sections in this order:\n"
+    "<plan>\n"
+    "...tool name or None...\n"
+    "</plan>\n"
+    "<arguments>\n"
+    "...compact JSON object...\n"
+    "</arguments>\n"
+    "Always include both sections. The content inside <arguments> must be a valid "
+    "compact JSON object. Do not output markdown, code fences, explanations, or "
+    "any extra text."
+)
 
 
 LEGACY_SYSTEM_HISTORY_PROMPT = (
@@ -12,7 +20,7 @@ LEGACY_SYSTEM_HISTORY_PROMPT = (
     "the conversation history when relevant. Only use parameter values that are "
     "explicitly stated or can be reasonably inferred from the query. If no tool "
     "matches the query, set the tool to 'None'. "
-    f"{STRICT_JSON_OUTPUT_INSTRUCTION}\n <|tool|>{{tools}}<|/tool|>"
+    f"{TAGGED_PLANNER_OUTPUT_INSTRUCTION}\n<|tool|>{{tools}}<|/tool|>"
 )
 
 LEGACY_SYSTEM_REWRITE_PROMPT = (
@@ -20,7 +28,7 @@ LEGACY_SYSTEM_REWRITE_PROMPT = (
     "appropriate tool and generate the corresponding parameters. If no tool "
     "matches the query, set the tool to 'None'. Only use parameter values that "
     "are explicitly stated or can be reasonably inferred from the query. "
-    f"{STRICT_JSON_OUTPUT_INSTRUCTION}\n <|tool|>{{tools}}<|/tool|>"
+    f"{TAGGED_PLANNER_OUTPUT_INSTRUCTION}\n<|tool|>{{tools}}<|/tool|>"
 )
 
 

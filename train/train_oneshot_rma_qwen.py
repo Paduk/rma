@@ -1,6 +1,7 @@
 import argparse
 import ast
 import json
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,23 +12,40 @@ import torch
 from datasets import Dataset
 from peft import get_peft_model
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     PreTrainedTokenizerBase,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
 )
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 UTILS_DIR = PROJECT_ROOT / "utils"
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 if str(UTILS_DIR) not in sys.path:
     sys.path.insert(0, str(UTILS_DIR))
 
+try:
+    from rma_model_profiles import (
+        RMA_MODEL_PROFILES,
+        resolve_profile_max_length,
+        resolve_profile_model_name,
+    )
+except ImportError:
+    from train.rma_model_profiles import (
+        RMA_MODEL_PROFILES,
+        resolve_profile_max_length,
+        resolve_profile_model_name,
+    )
 from oneshot_qwen_prompt import (
     build_api_str_from_candidates,
     build_oneshot_messages,
     render_chat_template,
+    render_messages_as_plain_text,
 )
 from train_sentence_rewriter import (
     DEFAULT_LLAMA_CPP_DIR,
@@ -60,15 +78,26 @@ ONESHOT_SYSTEM_PROMPT = (
     "keys. The value of \"arguments\" must always be an object. If no tool "
     "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}."
 )
+KNOWN_UNSUPPORTED_GGUF_ARCHITECTURES = {
+    "Exaone4ForCausalLM",
+    "Lfm2ForCausalLM",
+    "SmolLM3ForCausalLM",
+}
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train a one-shot RMA LoRA adapter for Qwen, Phi-4, or Llama-3."
+        description="Train a one-shot RMA LoRA adapter."
+    )
+    parser.add_argument(
+        "--profile",
+        choices=sorted(RMA_MODEL_PROFILES.keys()),
+        default=None,
+        help="Named model profile. --model_name overrides the profile model.",
     )
     parser.add_argument(
         "--model_name",
-        default=DEFAULT_MODEL_NAME,
+        default=None,
         help="Base model name to load from Hugging Face.",
     )
     parser.add_argument(
@@ -99,8 +128,31 @@ def parse_args():
     parser.add_argument(
         "--max_length",
         type=int,
-        default=1536,
+        default=None,
         help="Token truncation length.",
+    )
+    parser.add_argument(
+        "--chat_template_fallback",
+        choices=["simple", "error"],
+        default="simple",
+        help="Fallback for tokenizers without chat_template.",
+    )
+    parser.add_argument(
+        "--epoch_eval_path",
+        default=None,
+        help="Optional comma-separated TSV path(s) to evaluate with generation at each epoch end.",
+    )
+    parser.add_argument(
+        "--epoch_eval_sample_size",
+        default=50,
+        type=int,
+        help="Number of epoch-eval examples to use. Use <=0 for all rows.",
+    )
+    parser.add_argument(
+        "--epoch_eval_max_new_tokens",
+        default=192,
+        type=int,
+        help="Max new tokens for epoch-end generation evaluation.",
     )
     parser.add_argument(
         "--num_train_epochs",
@@ -233,6 +285,11 @@ def parse_args():
         help="Whether to trust remote model/tokenizer code while merging.",
     )
     parser.add_argument(
+        "--strict_postprocess",
+        action="store_true",
+        help="Attempt GGUF/Ollama postprocess even for model architectures known to be unsupported locally.",
+    )
+    parser.add_argument(
         "--force_download",
         action="store_true",
         help="Force re-download of the base model when download is needed.",
@@ -252,6 +309,17 @@ def resolve_path(path_value: str | Path) -> Path:
     return path.resolve()
 
 
+def resolve_project_path(path_value: str | Path) -> Path:
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        cwd_path = Path.cwd() / path
+        if cwd_path.exists():
+            path = cwd_path
+        else:
+            path = PROJECT_ROOT / path
+    return path.resolve()
+
+
 def is_qwen_model(model_name: str) -> bool:
     return "Qwen/" in model_name
 
@@ -265,11 +333,79 @@ def is_llama_model(model_name: str) -> bool:
 
 
 def ensure_supported_model(model_name: str):
-    if not (is_qwen_model(model_name) or is_phi_model(model_name) or is_llama_model(model_name)):
-        raise ValueError(
-            "train_oneshot_rma_qwen.py supports only Qwen-family models, "
-            "microsoft/Phi-4-mini-instruct, and meta-llama/Llama-3.2-3B-Instruct."
+    if not model_name:
+        raise ValueError("model_name must be resolved before training starts.")
+
+
+def resolve_trust_remote_code_arg(args, default: bool = True) -> bool:
+    if args.trust_remote_code == "true":
+        return True
+    if args.trust_remote_code == "false":
+        return False
+    return default
+
+
+def get_config_architecture(config) -> str | None:
+    architectures = getattr(config, "architectures", None)
+    if architectures:
+        return architectures[0]
+    return None
+
+
+def converter_supports_architecture(llama_cpp_dir: str | Path, architecture: str) -> bool:
+    llama_cpp_path = Path(llama_cpp_dir).expanduser().resolve()
+    converter_path = llama_cpp_path / "convert_hf_to_gguf.py"
+    if not converter_path.exists():
+        return False
+
+    probe = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(llama_cpp_path)!r})\n"
+        "import convert_hf_to_gguf as c\n"
+        f"c.ModelBase.from_model_architecture({architecture!r})\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=str(llama_cpp_path),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def maybe_auto_skip_unsupported_postprocess(args, config):
+    architecture = get_config_architecture(config)
+    if (
+        architecture in KNOWN_UNSUPPORTED_GGUF_ARCHITECTURES
+        and not args.skip_postprocess
+        and not args.strict_postprocess
+    ):
+        if converter_supports_architecture(args.llama_cpp_dir, architecture):
+            print(
+                "[postprocess] selected llama.cpp converter supports "
+                f"{architecture}; postprocess will proceed."
+            )
+            return
+        args.skip_postprocess = True
+        print(
+            "[postprocess] auto-skipped because selected llama.cpp converter does not "
+            f"register {architecture}: {args.llama_cpp_dir}. Use a newer "
+            "--llama_cpp_dir or --strict_postprocess to attempt it anyway."
         )
+
+
+def configure_tokenizer_padding(tokenizer) -> int:
+    added_tokens = 0
+    if tokenizer.pad_token_id is None:
+        if tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        elif tokenizer.unk_token is not None:
+            tokenizer.pad_token = tokenizer.unk_token
+        else:
+            added_tokens = tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
+    tokenizer.padding_side = "right"
+    return added_tokens
 
 
 def read_simple_apis(api_path: Path) -> Dict:
@@ -338,6 +474,84 @@ def build_oneshot_target(example) -> str:
     return json.dumps(target, ensure_ascii=False, separators=(",", ":"))
 
 
+def parse_answer_value(value):
+    if isinstance(value, dict):
+        return value
+
+    parsed = value
+    for _ in range(2):
+        if not isinstance(parsed, str):
+            break
+        try:
+            parsed = ast.literal_eval(parsed)
+        except Exception:
+            try:
+                parsed = json.loads(parsed)
+            except Exception:
+                break
+
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def parse_generated_json(text: str) -> dict:
+    text = text.strip()
+    if "```" in text:
+        text = text.replace("```json", "```")
+        parts = text.split("```")
+        if len(parts) >= 3:
+            text = parts[1].strip()
+
+    match = None
+    depth = 0
+    start = None
+    for index, char in enumerate(text):
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                match = text[start:index + 1]
+                break
+
+    candidate = match or text
+    try:
+        parsed = ast.literal_eval(candidate)
+    except Exception:
+        parsed = json.loads(candidate)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def resolve_epoch_eval_paths(path_arg: str | None) -> list[str]:
+    if not path_arg:
+        return []
+    return [
+        str(resolve_project_path(path))
+        for path in path_arg.split(",")
+        if path.strip()
+    ]
+
+
+def load_epoch_eval_dataset(path_arg: str | None, sample_size: int):
+    data_files = resolve_epoch_eval_paths(path_arg)
+    if not data_files:
+        return None
+
+    dataframes = []
+    for file_path in data_files:
+        dataframe = pd.read_csv(file_path, sep="\t", dtype=str)
+        dataframe["source_file"] = Path(file_path).name
+        dataframes.append(dataframe)
+    dataset = Dataset.from_pandas(
+        pd.concat(dataframes, ignore_index=True, sort=False),
+        preserve_index=False,
+    )
+    if sample_size > 0:
+        dataset = dataset.select(range(min(sample_size, len(dataset))))
+    return dataset
+
+
 def tokenize_with_labels(tokenizer, prompt: str, prompt_prefix: str, max_length: int):
     tokenized = tokenizer(
         prompt,
@@ -369,7 +583,37 @@ def build_llama_prompts(api_str: str, conversation_history: str, query: str, tar
     return prompt_prefix, prompt
 
 
-def build_preprocess_fn(tokenizer, model_name: str, apis: Dict, max_length: int):
+def render_model_messages(
+    tokenizer,
+    messages,
+    add_generation_prompt: bool,
+    model_name: str,
+    chat_template_fallback: str,
+):
+    if getattr(tokenizer, "chat_template", None):
+        return render_chat_template(
+            tokenizer=tokenizer,
+            messages=messages,
+            add_generation_prompt=add_generation_prompt,
+            model_name=model_name,
+        )
+
+    if chat_template_fallback == "error":
+        raise ValueError(
+            "Tokenizer does not define chat_template. Use --chat_template_fallback simple "
+            "for base-model one-shot SFT."
+        )
+
+    return render_messages_as_plain_text(messages, add_generation_prompt=add_generation_prompt)
+
+
+def build_preprocess_fn(
+    tokenizer,
+    model_name: str,
+    apis: Dict,
+    max_length: int,
+    chat_template_fallback: str,
+):
     def preprocess(example):
         candidates = parse_literal(
             example["candidates"],
@@ -393,17 +637,19 @@ def build_preprocess_fn(tokenizer, model_name: str, apis: Dict, max_length: int)
                 apis=apis,
             )
 
-            prompt_prefix = render_chat_template(
+            prompt_prefix = render_model_messages(
                 tokenizer=tokenizer,
                 messages=messages,
                 add_generation_prompt=True,
                 model_name=model_name,
+                chat_template_fallback=chat_template_fallback,
             )
-            prompt = render_chat_template(
+            prompt = render_model_messages(
                 tokenizer=tokenizer,
                 messages=messages + [{"role": "assistant", "content": target_json}],
                 add_generation_prompt=False,
                 model_name=model_name,
+                chat_template_fallback=chat_template_fallback,
             )
 
         input_ids, labels = tokenize_with_labels(
@@ -421,6 +667,160 @@ def build_preprocess_fn(tokenizer, model_name: str, apis: Dict, max_length: int)
         }
 
     return preprocess
+
+
+def build_oneshot_inference_prompt(
+    tokenizer,
+    model_name: str,
+    apis: Dict,
+    example,
+    chat_template_fallback: str,
+) -> str:
+    candidates = parse_literal(
+        example["candidates"],
+        field_name="candidates",
+        source_file=example.get("source_file"),
+    )
+    api_str = build_api_str_from_candidates(candidates, apis)
+    if is_llama_model(model_name):
+        prompt_prefix, _ = build_llama_prompts(
+            api_str=api_str,
+            conversation_history=example["conversation_history"],
+            query=example["query"],
+            target_json="",
+        )
+        return prompt_prefix
+
+    messages = build_oneshot_messages(
+        conversation_history=example["conversation_history"],
+        query=example["query"],
+        candidates=candidates,
+        apis=apis,
+    )
+    return render_model_messages(
+        tokenizer=tokenizer,
+        messages=messages,
+        add_generation_prompt=True,
+        model_name=model_name,
+        chat_template_fallback=chat_template_fallback,
+    )
+
+
+class EpochOneShotEvalCallback(TrainerCallback):
+    def __init__(
+        self,
+        tokenizer,
+        eval_dataset,
+        apis: Dict,
+        model_name: str,
+        max_length: int,
+        chat_template_fallback: str,
+        max_new_tokens: int,
+    ):
+        self.tokenizer = tokenizer
+        self.eval_dataset = eval_dataset
+        self.apis = apis
+        self.model_name = model_name
+        self.max_length = max_length
+        self.chat_template_fallback = chat_template_fallback
+        self.max_new_tokens = max_new_tokens
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        if model is None or not state.is_world_process_zero:
+            return control
+
+        model_was_training = model.training
+        model.eval()
+        device = next(model.parameters()).device
+
+        plan_pass = 0
+        arg_pass = 0
+        all_pass = 0
+        parse_fail = 0
+        total = 0
+
+        with torch.no_grad():
+            for example in self.eval_dataset:
+                total += 1
+                prompt = build_oneshot_inference_prompt(
+                    tokenizer=self.tokenizer,
+                    model_name=self.model_name,
+                    apis=self.apis,
+                    example=example,
+                    chat_template_fallback=self.chat_template_fallback,
+                )
+                model_inputs = self.tokenizer(
+                    prompt,
+                    add_special_tokens=False,
+                    truncation=True,
+                    max_length=self.max_length,
+                    return_tensors="pt",
+                )
+                model_inputs = {
+                    key: value.to(device)
+                    for key, value in model_inputs.items()
+                }
+                input_length = model_inputs["input_ids"].shape[-1]
+                generated_ids = model.generate(
+                    **model_inputs,
+                    max_new_tokens=self.max_new_tokens,
+                    do_sample=False,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+                generated_text = self.tokenizer.decode(
+                    generated_ids[0][input_length:],
+                    skip_special_tokens=False,
+                )
+
+                try:
+                    prediction = parse_generated_json(generated_text)
+                except Exception:
+                    prediction = {}
+                    parse_fail += 1
+
+                gold = parse_answer_value(example["answer"])
+                plan_ok = prediction.get("plan") == gold.get("plan")
+                args_ok = prediction.get("arguments") == gold.get("arguments")
+                plan_pass += int(plan_ok)
+                arg_pass += int(args_ok)
+                all_pass += int(plan_ok and args_ok)
+
+        if model_was_training:
+            model.train()
+
+        if total:
+            epoch_value = state.epoch if state.epoch is not None else -1
+            print(
+                "[epoch_eval] "
+                f"epoch={epoch_value:.2f} samples={total} "
+                f"plan={plan_pass / total * 100:.2f}% "
+                f"arguments={arg_pass / total * 100:.2f}% "
+                f"all={all_pass / total * 100:.2f}% "
+                f"parse_fail={parse_fail}"
+            )
+        return control
+
+
+def build_epoch_eval_callbacks(args, tokenizer, apis: Dict, model_name: str, max_length: int):
+    eval_dataset = load_epoch_eval_dataset(args.epoch_eval_path, args.epoch_eval_sample_size)
+    if eval_dataset is None:
+        return []
+    print(
+        "[epoch_eval] loaded "
+        f"{len(eval_dataset)} examples from {resolve_epoch_eval_paths(args.epoch_eval_path)}"
+    )
+    return [
+        EpochOneShotEvalCallback(
+            tokenizer=tokenizer,
+            eval_dataset=eval_dataset,
+            apis=apis,
+            model_name=model_name,
+            max_length=max_length,
+            chat_template_fallback=args.chat_template_fallback,
+            max_new_tokens=args.epoch_eval_max_new_tokens,
+        )
+    ]
 
 
 def max_total_length(dataset: Dataset) -> int:
@@ -475,6 +875,16 @@ class DataCollatorForCausalLM:
 
 def main():
     args = parse_args()
+    args.model_name = resolve_profile_model_name(
+        profile=args.profile,
+        model_name=args.model_name,
+        default_model_name=DEFAULT_MODEL_NAME,
+    )
+    args.max_length = resolve_profile_max_length(
+        profile=args.profile,
+        max_length=args.max_length,
+        default_max_length=1536,
+    )
     ensure_supported_model(args.model_name)
 
     train_dir = resolve_path(args.train_dir)
@@ -488,6 +898,13 @@ def main():
     )
 
     apply_postprocess_defaults(args, args.model_name, output_root)
+    trust_remote_code = resolve_trust_remote_code_arg(args, default=True)
+    config = AutoConfig.from_pretrained(
+        args.model_name,
+        cache_dir=str(cache_dir),
+        trust_remote_code=trust_remote_code,
+    )
+    maybe_auto_skip_unsupported_postprocess(args, config)
 
     if args.postprocess_only and args.skip_postprocess:
         raise ValueError("--postprocess_only and --skip_postprocess cannot be used together.")
@@ -505,7 +922,9 @@ def main():
         path.name for path in output_dir.glob("checkpoint-*") if path.is_dir()
     }
 
+    print(f"profile: {args.profile}")
     print(f"model_name: {args.model_name}")
+    print(f"model_architecture: {get_config_architecture(config)}")
     print(f"train_dir: {train_dir}")
     print(f"additional_dir: {additional_dir}")
     print(f"tools_path: {tools_path}")
@@ -515,6 +934,7 @@ def main():
     print(f"default_merged_dir: {args.merged_dir}")
     print(f"default_gguf_path: {args.gguf_path}")
     print(f"default_ollama_model_name: {args.ollama_model_name}")
+    print(f"chat_template_fallback: {args.chat_template_fallback}")
 
     if args.postprocess_only:
         postprocess_trained_model(
@@ -532,16 +952,19 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name,
         cache_dir=str(cache_dir),
+        trust_remote_code=trust_remote_code,
     )
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+    added_tokens = configure_tokenizer_padding(tokenizer)
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         cache_dir=str(cache_dir),
         dtype=torch.bfloat16,
+        trust_remote_code=trust_remote_code,
         device_map="auto",
     )
+    if added_tokens:
+        model.resize_token_embeddings(len(tokenizer))
     model.gradient_checkpointing_enable()
 
     files = collect_training_files(train_dir, additional_dir)
@@ -555,6 +978,7 @@ def main():
             model_name=args.model_name,
             apis=apis,
             max_length=args.max_length,
+            chat_template_fallback=args.chat_template_fallback,
         ),
         remove_columns=raw_dataset.column_names,
         desc="Preprocessing one-shot task",
@@ -597,6 +1021,13 @@ def main():
         save_strategy="epoch",
         save_total_limit=args.save_total_limit,
     )
+    callbacks = build_epoch_eval_callbacks(
+        args=args,
+        tokenizer=tokenizer,
+        apis=apis,
+        model_name=args.model_name,
+        max_length=args.max_length,
+    )
 
     trainer = Trainer(
         model=model,
@@ -604,6 +1035,7 @@ def main():
         train_dataset=processed_train,
         data_collator=DataCollatorForCausalLM(tokenizer=tokenizer),
         tokenizer=tokenizer,
+        callbacks=callbacks,
     )
 
     trainer.train()

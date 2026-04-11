@@ -19,6 +19,7 @@ from utils.oneshot_qwen_prompt import (
 from utils.frequently_used_tools import get_model_name
 
 DEFAULT_TOOLS_PATH = PROJECT_ROOT / "apis" / "api_v3.0.1.jsonl"
+DEFAULT_SIMPLE_TOOLS_PATH = PROJECT_ROOT / "apis" / "simple_api.json"
 DEFAULT_MODEL_NAME = "o4-mini"
 """
 python3 /home/hj153lee/RMA/cloudllm_inference_oneshot.py \
@@ -34,7 +35,7 @@ def parse_args():
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL_NAME,
-        help="Cloud model alias. Example: o4-mini, gpt-5-mini, gpt-4.1-2025-04-14.",
+        help="Cloud model alias. Example: o4-mini, gpt-5.4-2026-03-05, gpt-5.4-mini, gpt-5.4-nano, gpt-5-mini, gpt-4.1-2025-04-14.",
     )
     parser.add_argument(
         "--tools_path",
@@ -61,6 +62,18 @@ def parse_args():
         type=int,
         default=min(8, (os.cpu_count() or 1) * 5),
         help="Maximum concurrent cloud requests.",
+    )
+    parser.add_argument(
+        "--prompt_option",
+        choices=["prompt1", "prompt2", "prompt3", "prompt4", "prompt4-rewriting", "prompt5"],
+        default="prompt1",
+        help="Oneshot prompt variant. Default keeps the current prompt.",
+    )
+    parser.add_argument(
+        "--reasoning_effort",
+        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        default=None,
+        help="OpenAI reasoning effort for supported reasoning models.",
     )
     return parser.parse_args()
 
@@ -91,6 +104,23 @@ def print_first_inference_preview(*, script_name: str, test_key: str, file_name:
     print("response:")
     print(raw or "<empty>")
     print()
+
+
+def disable_per_request_cost_print(generate_response):
+    if hasattr(generate_response, "print_cost"):
+        generate_response.print_cost = False
+
+
+def print_file_cumulative_cost(*, generate_response, test_key: str, file_name: str):
+    total_cost = getattr(generate_response, "total_cost", None)
+    if total_cost is None:
+        return
+    print(
+        f"[Cost] test_key={test_key} file={file_name} cumulative_cost=${total_cost:.6f} USD",
+        flush=True,
+    )
+
+
 def extract_turn_from_filename(file_name):
     match = re.search(r"it(\d+)", file_name)
     if not match:
@@ -306,13 +336,14 @@ def parse_literal(raw_value, field_name: str):
     return ast.literal_eval(raw_value)
 
 
-def build_oneshot_prompt(example, apis) -> str:
+def build_oneshot_prompt(example, prompt_apis, prompt_option: str = "prompt1") -> str:
     candidates = parse_literal(example["candidates"], "candidates")
     messages = build_oneshot_messages(
         conversation_history=example["conversation_history"],
         query=example["query"],
         candidates=candidates,
-        apis=apis,
+        apis=prompt_apis,
+        prompt_option=prompt_option,
     )
     return render_messages_as_plain_text(
         messages=messages,
@@ -363,9 +394,10 @@ def process_example(
     row_idx,
     test_key,
     file_path,
-    apis,
+    prompt_apis,
     generate_response,
     model_name,
+    prompt_option,
 ):
     prompt = ""
     raw = ""
@@ -375,7 +407,8 @@ def process_example(
     try:
         prompt = build_oneshot_prompt(
             example,
-            apis,
+            prompt_apis,
+            prompt_option=prompt_option,
         )
         response = generate_response("", [prompt])[0]
         raw = response.get("text", "")
@@ -423,7 +456,10 @@ def process_example(
 def main():
     args = parse_args()
     apis = read_apis(Path(args.tools_path))
-    model_name, generate_response = get_model_name(args.model)
+    simple_apis = read_apis(DEFAULT_SIMPLE_TOOLS_PATH)
+    prompt_apis = simple_apis if args.prompt_option == "prompt5" else apis
+    model_name, generate_response = get_model_name(args.model, args.reasoning_effort)
+    disable_per_request_cost_print(generate_response)
     data_files = build_data_files()
     test_keys = parse_test_keys(args.test_key, data_files)
     out_path = Path(args.o)
@@ -431,7 +467,9 @@ def main():
     error_log_path = out_path.with_name(f"{out_path.stem}.errors.jsonl")
     init_error_log(error_log_path)
     print(f"model_name: {model_name}")
+    print(f"reasoning_effort: {args.reasoning_effort}")
     print("prompt_style: plain_text_messages")
+    print(f"prompt_option: {args.prompt_option}")
     print(f"test_keys: {test_keys}")
     print(f"error_log_path: {error_log_path}")
 
@@ -458,9 +496,10 @@ def main():
                     row_idx=0,
                     test_key=test_key,
                     file_path=file_path,
-                    apis=apis,
+                    prompt_apis=prompt_apis,
                     generate_response=generate_response,
                     model_name=model_name,
+                    prompt_option=args.prompt_option,
                 )
                 if not printed_first_prompt and not printed_first_raw:
                     print_first_inference_preview(
@@ -500,9 +539,10 @@ def main():
                         row_idx=row_idx,
                         test_key=test_key,
                         file_path=file_path,
-                        apis=apis,
+                        prompt_apis=prompt_apis,
                         generate_response=generate_response,
                         model_name=model_name,
+                        prompt_option=args.prompt_option,
                     ): row_idx
                     for row_idx, example in enumerate(examples[1:], start=1)
                 }
@@ -537,6 +577,11 @@ def main():
                 df_file = df_file.sort_values("row_idx").reset_index(drop=True)
             split_results[test_key] = sorted(split_results[test_key], key=lambda row: row["row_idx"])
             print_eval(df_file, title=f"{test_key}/{file_path.name}", test_type=model_name)
+            print_file_cumulative_cost(
+                generate_response=generate_response,
+                test_key=test_key,
+                file_name=file_path.name,
+            )
             all_results.extend(df_file.to_dict("records"))
 
     result_df = pd.DataFrame(all_results)
