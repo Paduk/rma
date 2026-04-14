@@ -274,7 +274,7 @@ def parse_args():
     )
     parser.add_argument(
         "--num_train_epochs",
-        default=5,
+        default=4,
         type=float,
         help="Training epochs. Legacy default is 4.",
     )
@@ -295,6 +295,29 @@ def parse_args():
         default=5e-5,
         type=float,
         help="Legacy default is 5e-5.",
+    )
+    parser.add_argument(
+        "--lora_r",
+        default=None,
+        type=int,
+        help="Override LoRA rank. Generic/all-linear default is 16; use 4 for about one quarter of the LoRA params.",
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        default=None,
+        type=int,
+        help="Override LoRA alpha. If using --lora_r 4, alpha 8 keeps the existing alpha/r ratio.",
+    )
+    parser.add_argument(
+        "--lora_dropout",
+        default=None,
+        type=float,
+        help="Override LoRA dropout.",
+    )
+    parser.add_argument(
+        "--lora_target_modules",
+        default=None,
+        help="Override LoRA targets. Use 'all-linear' or a comma-separated list like q_proj,v_proj.",
     )
     parser.add_argument(
         "--logging_steps",
@@ -1164,34 +1187,80 @@ def make_llama_rewrite_preprocess_fn(tokenizer, apis, prompt_template: str, mode
     return preprocess_example_rewrite
 
 
-def build_qwen_lora_config():
+def resolve_lora_target_modules(args, default_target_modules):
+    if not args.lora_target_modules:
+        return default_target_modules
+
+    value = args.lora_target_modules.strip()
+    if value == "all-linear":
+        return "all-linear"
+
+    modules = [module.strip() for module in value.split(",") if module.strip()]
+    if not modules:
+        raise ValueError("--lora_target_modules must be 'all-linear' or a non-empty comma-separated list.")
+    return modules
+
+
+def build_lora_config(args, default_r, default_alpha, default_dropout, default_target_modules):
+    r = args.lora_r if args.lora_r is not None else default_r
+    alpha = args.lora_alpha if args.lora_alpha is not None else default_alpha
+    dropout = args.lora_dropout if args.lora_dropout is not None else default_dropout
+    target_modules = resolve_lora_target_modules(args, default_target_modules)
+
+    if r <= 0:
+        raise ValueError("--lora_r must be positive.")
+    if alpha <= 0:
+        raise ValueError("--lora_alpha must be positive.")
+    if not 0 <= dropout < 1:
+        raise ValueError("--lora_dropout must be in [0, 1).")
+
     return LoraConfig(
         task_type=TaskType.CAUSAL_LM,
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
+        r=r,
+        lora_alpha=alpha,
+        lora_dropout=dropout,
         bias="none",
-        target_modules="all-linear",
+        target_modules=target_modules,
     )
 
 
-def build_phi_lora_config():
-    return LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
-        bias="none",
-        target_modules="all-linear",
+def print_lora_config(lora_config):
+    print(
+        "LoRA config: "
+        f"r={lora_config.r}, "
+        f"alpha={lora_config.lora_alpha}, "
+        f"dropout={lora_config.lora_dropout}, "
+        f"target_modules={lora_config.target_modules}"
     )
 
 
-def build_llama_lora_config():
-    return LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=8,
-        lora_alpha=16,
-        target_modules=[
+def build_qwen_lora_config(args):
+    return build_lora_config(
+        args,
+        default_r=16,
+        default_alpha=32,
+        default_dropout=0.05,
+        default_target_modules="all-linear",
+    )
+
+
+def build_phi_lora_config(args):
+    return build_lora_config(
+        args,
+        default_r=16,
+        default_alpha=32,
+        default_dropout=0.05,
+        default_target_modules="all-linear",
+    )
+
+
+def build_llama_lora_config(args):
+    return build_lora_config(
+        args,
+        default_r=8,
+        default_alpha=16,
+        default_dropout=0.1,
+        default_target_modules=[
             "q_proj",
             "k_proj",
             "v_proj",
@@ -1200,19 +1269,16 @@ def build_llama_lora_config():
             "down_proj",
             "o_proj",
         ],
-        lora_dropout=0.1,
-        bias="none",
     )
 
 
-def build_generic_lora_config():
-    return LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=16,
-        lora_alpha=32,
-        lora_dropout=0.05,
-        bias="none",
-        target_modules="all-linear",
+def build_generic_lora_config(args):
+    return build_lora_config(
+        args,
+        default_r=16,
+        default_alpha=32,
+        default_dropout=0.05,
+        default_target_modules="all-linear",
     )
 
 
@@ -1314,10 +1380,12 @@ def run_qwen_profile(args):
     print(processed_train[0]["strprompt"])
     print_max_total_length(processed_train)
 
-    model = get_peft_model(model, build_qwen_lora_config())
+    lora_config = build_qwen_lora_config(args)
+    print_lora_config(lora_config)
+    model = get_peft_model(model, lora_config)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())
-    print(f"LoRA params: {trainable/1e6:.1f} M  /  Total: {total/1e6:.1f} M")
+    print(f"LoRA params: {trainable/1e6:.1f} M  /  Total: {total/1e6:.1f} M ({100 * trainable / total:.2f}%)")
 
     training_args = build_training_args(str(output_dir), args, include_fp16=False)
     callbacks = build_epoch_eval_callbacks(
@@ -1437,10 +1505,12 @@ def run_phi_profile(args):
     print(processed_train[0]["strprompt"])
     print_max_total_length(processed_train)
 
-    model = get_peft_model(model, build_phi_lora_config())
+    lora_config = build_phi_lora_config(args)
+    print_lora_config(lora_config)
+    model = get_peft_model(model, lora_config)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())
-    print(f"LoRA params: {trainable/1e6:.1f} M  /  Total: {total/1e6:.1f} M")
+    print(f"LoRA params: {trainable/1e6:.1f} M  /  Total: {total/1e6:.1f} M ({100 * trainable / total:.2f}%)")
 
     training_args = build_training_args(str(output_dir), args, include_fp16=False)
     callbacks = build_epoch_eval_callbacks(
@@ -1592,7 +1662,9 @@ def run_llama_profile(args):
     print(processed_train[0]["strprompt"])
     print_max_total_length(processed_train)
 
-    model = get_peft_model(model, build_llama_lora_config())
+    lora_config = build_llama_lora_config(args)
+    print_lora_config(lora_config)
+    model = get_peft_model(model, lora_config)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())
     print(
@@ -1748,10 +1820,12 @@ def run_generic_profile(args):
         model.resize_token_embeddings(len(tokenizer))
     model.gradient_checkpointing_enable()
 
-    model = get_peft_model(model, build_generic_lora_config())
+    lora_config = build_generic_lora_config(args)
+    print_lora_config(lora_config)
+    model = get_peft_model(model, lora_config)
     trainable = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total = sum(parameter.numel() for parameter in model.parameters())
-    print(f"LoRA params: {trainable/1e6:.1f} M  /  Total: {total/1e6:.1f} M")
+    print(f"LoRA params: {trainable/1e6:.1f} M  /  Total: {total/1e6:.1f} M ({100 * trainable / total:.2f}%)")
 
     training_args = build_training_args(str(output_dir), args, include_fp16=False)
     callbacks = build_epoch_eval_callbacks(

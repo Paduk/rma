@@ -4,6 +4,7 @@ import os
 import requests
 import ast
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datasets import load_dataset
 import pdb
@@ -117,6 +118,20 @@ def get_arg_parse():
     parser.add_argument('--api', type=str, default="apis/api_v3.0.1.jsonl", help='사용자 이름')
     parser.add_argument('--test_key', type=str, default="", help='')
     parser.add_argument('--host', type=str, default="http://localhost:11436", help='Ollama host URL')
+    parser.add_argument('--temperature', type=float, default=0.0, help='Ollama sampling temperature')
+    parser.add_argument(
+        '--multi',
+        '--num_parallel',
+        dest='num_parallel',
+        nargs='?',
+        type=int,
+        const=4,
+        default=1,
+        help=(
+            'Number of concurrent Ollama requests. Omit or set to 1 for the '
+            'current sequential behavior; use --multi 3~5 for parallel calls.'
+        ),
+    )
     parser.add_argument(
         '--prompt_option',
         type=str,
@@ -325,13 +340,13 @@ def truncate_at_stop_markers(text, stop_markers=None):
 
 # Ollama API 호출 함수
 #def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11434'):
-def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11435', stop=None): # qwen3
+def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11435', stop=None, temperature=0.0): # qwen3
     payload = {
         "model": model,
         "prompt": prompt,
         "format": "json",
         "options": {
-            "temperature": 0.0,
+            "temperature": temperature,
             "num_predict": 512,
         },
         "stream": False
@@ -480,6 +495,69 @@ def parse_test_keys(test_key_arg, data_files):
 
     return deduped_test_keys
 
+
+def evaluate_multi_example(row_idx, ex, test_key, file_name, model_name, host, stop, temperature):
+    prompt = ex["strprompt"]
+    raw = ""
+    gt = {}
+    parse_error = ""
+    error_message = None
+
+    try:
+        raw = generate_text(
+            prompt,
+            model=model_name,
+            host=host,
+            stop=stop,
+            temperature=temperature,
+        )
+        parse_source = truncate_at_stop_markers(raw, stop)
+        try:
+            result = ast.literal_eval(parse_source)
+        except Exception as parse_exc:
+            result = extract_json_from_markdown(parse_source)
+            if result is None:
+                parse_error = str(parse_exc)
+                raise ValueError(f"Failed to parse model output: {parse_error}")
+
+        if not isinstance(result, dict):
+            raise ValueError(f"Parsed model output is not a dict: {type(result).__name__}")
+
+        gt = ast.literal_eval(ex["stranswer"])
+        if type(gt) == str:
+            gt = ast.literal_eval(gt)
+
+        plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
+        arg_res = "pass" if result.get("arguments") == gt.get("arguments") else "fail"
+        all_res = "pass" if plan_res == "pass" and arg_res == "pass" else "fail"
+    except Exception as e:
+        result = {"error": str(e)}
+        if not parse_error:
+            parse_error = str(e)
+        error_message = f"Error: {e}, {raw}"
+        plan_res = "fail"
+        arg_res = "fail"
+        all_res = "fail"
+
+    row = {
+        "test_key":             test_key,
+        "conversation_history": ex.get("conversation_history"),
+        "query":                ex.get("query"),
+        "rewrited_query":       ex.get("rewrited_query"),
+        "candidates":           ex.get("candidates"),
+        "raw_generation":       raw,
+        "generation":           result,
+        "parse_error":          parse_error,
+        "gt":                   gt,
+        "plan":                 plan_res,
+        "arguments":            arg_res,
+        "all":                  all_res,
+        "file":                 file_name,
+        "turn":                 extract_turn_from_filename(file_name)
+    }
+    return row_idx, row, error_message
+
+
 """
 python3 /home/hj153lee/RMA/ollama_inference_multi.py \
 --t new-base-qwen3 \
@@ -488,6 +566,9 @@ python3 /home/hj153lee/RMA/ollama_inference_multi.py \
 --host http://localhost:21435
 """
 def main(out_file):      
+    if args.num_parallel < 1:
+        raise ValueError("--multi/--num_parallel must be >= 1.")
+
     #apis = read_apis("apis/api_v3.0.1.jsonl", simple=False)    
     sft_apis = read_apis("apis/simple_api.json", simple=True)    
     out_path = Path(out_file)
@@ -741,6 +822,8 @@ def main(out_file):
 
     print(model_name)
     print(args.host)
+    if args.num_parallel > 1:
+        print(f"num_parallel: {args.num_parallel}")
     # 데이터 예시 전처리 함수
     def preprocess_example_it(example, apis, config, prompt_tokenizer=None):
         api_str = ""
@@ -811,68 +894,104 @@ def main(out_file):
             #exit(0)
             file_results = []
 
-            for row_idx, ex in enumerate(
-                tqdm(proc, desc=f"Processing {test_key}/{os.path.basename(file_path)}")
-            ):
-                prompt = ex["strprompt"]
-                raw = ""
-                gt = {}
-                parse_error = ""
+            if args.num_parallel <= 1:
+                for row_idx, ex in enumerate(
+                    tqdm(proc, desc=f"Processing {test_key}/{os.path.basename(file_path)}")
+                ):
+                    prompt = ex["strprompt"]
+                    raw = ""
+                    gt = {}
+                    parse_error = ""
 
-                try:
-                    raw = generate_text(
-                        prompt,
-                        model=model_name,
-                        host=args.host,
-                        stop=config.get("stop"),
-                    )
-                    parse_source = truncate_at_stop_markers(raw, config.get("stop"))
-                    #result = ast.literal_eval(raw)
                     try:
-                        result = ast.literal_eval(parse_source)
-                    except Exception as parse_exc:
-                        result = extract_json_from_markdown(parse_source)
-                        if result is None:
-                            parse_error = str(parse_exc)
-                            raise ValueError(f"Failed to parse model output: {parse_error}")
+                        raw = generate_text(
+                            prompt,
+                            model=model_name,
+                            host=args.host,
+                            stop=config.get("stop"),
+                            temperature=args.temperature,
+                        )
+                        parse_source = truncate_at_stop_markers(raw, config.get("stop"))
+                        #result = ast.literal_eval(raw)
+                        try:
+                            result = ast.literal_eval(parse_source)
+                        except Exception as parse_exc:
+                            result = extract_json_from_markdown(parse_source)
+                            if result is None:
+                                parse_error = str(parse_exc)
+                                raise ValueError(f"Failed to parse model output: {parse_error}")
 
-                    if not isinstance(result, dict):
-                        raise ValueError(f"Parsed model output is not a dict: {type(result).__name__}")
+                        if not isinstance(result, dict):
+                            raise ValueError(f"Parsed model output is not a dict: {type(result).__name__}")
 
-                    gt = ast.literal_eval(ex["stranswer"])
-                    if type(gt) == str:
-                        gt = ast.literal_eval(gt)
+                        gt = ast.literal_eval(ex["stranswer"])
+                        if type(gt) == str:
+                            gt = ast.literal_eval(gt)
 
-                    plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
-                    arg_res  = "pass" if result.get("arguments") == gt.get("arguments") else "fail"
-                    all_res  = "pass" if plan_res=="pass" and arg_res=="pass" else "fail"
-                except Exception as e:
-                    result   = {"error": str(e)}
-                    if not parse_error:
-                        parse_error = str(e)
-                    print(f"Error: {e}, {raw}")
-                    plan_res = "fail"
-                    arg_res  = "fail"
-                    all_res  = "fail"
+                        plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
+                        arg_res  = "pass" if result.get("arguments") == gt.get("arguments") else "fail"
+                        all_res  = "pass" if plan_res=="pass" and arg_res=="pass" else "fail"
+                    except Exception as e:
+                        result   = {"error": str(e)}
+                        if not parse_error:
+                            parse_error = str(e)
+                        print(f"Error: {e}, {raw}")
+                        plan_res = "fail"
+                        arg_res  = "fail"
+                        all_res  = "fail"
 
-                row = {
-                    "test_key":             test_key,
-                    "conversation_history": ex.get("conversation_history"),
-                    "query":                ex.get("query"),
-                    "rewrited_query":       ex.get("rewrited_query"),
-                    "candidates":           ex.get("candidates"),
-                    "raw_generation":       raw,
-                    "generation":           result,
-                    "parse_error":          parse_error,
-                    "gt":                   gt,
-                    "plan":                 plan_res,
-                    "arguments":            arg_res,
-                    "all":                  all_res,
-                    "file":                 os.path.basename(file_path),
-                    "turn":                 extract_turn_from_filename(os.path.basename(file_path))
-                }
-                file_results.append(row)
-                split_results[test_key].append(row)
+                    row = {
+                        "test_key":             test_key,
+                        "conversation_history": ex.get("conversation_history"),
+                        "query":                ex.get("query"),
+                        "rewrited_query":       ex.get("rewrited_query"),
+                        "candidates":           ex.get("candidates"),
+                        "raw_generation":       raw,
+                        "generation":           result,
+                        "parse_error":          parse_error,
+                        "gt":                   gt,
+                        "plan":                 plan_res,
+                        "arguments":            arg_res,
+                        "all":                  all_res,
+                        "file":                 os.path.basename(file_path),
+                        "turn":                 extract_turn_from_filename(os.path.basename(file_path))
+                    }
+                    file_results.append(row)
+                    split_results[test_key].append(row)
+            else:
+                file_name = os.path.basename(file_path)
+                rows_by_idx = {}
+                error_messages = {}
+
+                with ThreadPoolExecutor(max_workers=args.num_parallel) as executor:
+                    futures = [
+                        executor.submit(
+                            evaluate_multi_example,
+                            row_idx,
+                            ex,
+                            test_key,
+                            file_name,
+                            model_name,
+                            args.host,
+                            config.get("stop"),
+                            args.temperature,
+                        )
+                        for row_idx, ex in enumerate(proc)
+                    ]
+                    for future in tqdm(
+                        as_completed(futures),
+                        total=len(futures),
+                        desc=f"Processing {test_key}/{file_name}",
+                    ):
+                        row_idx, row, error_message = future.result()
+                        rows_by_idx[row_idx] = row
+                        if error_message:
+                            error_messages[row_idx] = error_message
+
+                file_results = [rows_by_idx[row_idx] for row_idx in range(len(proc))]
+                for row_idx in sorted(error_messages):
+                    print(error_messages[row_idx])
+                split_results[test_key].extend(file_results)
 
             df_file = pd.DataFrame(file_results)
             print_eval(df_file, title=f"{test_key}/{os.path.basename(file_path)}", test_type=model_name)

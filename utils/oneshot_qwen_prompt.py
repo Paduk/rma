@@ -108,34 +108,55 @@ def build_api_str_from_candidates(candidates, apis) -> str:
 
 
 def build_system_message(api_str: str, prompt_option: str = "prompt1") -> str:
+    if prompt_option == "reference-turn":
+        return (
+            "Given a conversation history, a query, and a list of available tools, "
+            "first write rewrited_query. Use only the dialogue in reference_turn "
+            "from conversation_history together with the query to resolve ambiguous "
+            "pronouns or omitted references. Then, based on the "            
+            "rewrited_query, select the most appropriate tool and generate its "
+            "arguments. Only use parameter values that are explicitly stated or can "
+            "be reasonably inferred from the rewrited_query. Return compact JSON "
+            "only with keys \"rewrited_query\", \"plan\", and \"arguments\". Always "
+            "include all three keys. The value of \"arguments\" must always be an object.\n"                        
+            f"<|tool|>{api_str}<|/tool|>"
+        )
+    if prompt_option == "reference-history":
+        return (
+            "Given a conversation history, a query, and a list of available tools, "
+            "first write rewrited_query. The conversation_history contains only the "
+            "dialogue selected as relevant context. Use only the conversation_history "
+            "together with the query to resolve ambiguous pronouns or omitted "
+            "references. Then, based on the "
+            "rewrited_query, select the most appropriate tool and generate its "
+            "arguments. Only use parameter values that are explicitly stated or can "
+            "be reasonably inferred from the rewrited_query. Return compact JSON "
+            "only with keys \"rewrited_query\", \"plan\", and \"arguments\". Always "
+            "include all three keys. The value of \"arguments\" must always be an object.\n"                        
+            f"<|tool|>{api_str}<|/tool|>"
+        )
     if prompt_option in {"prompt1", "prompt3"}:
         return (
             "Given a conversation history, a user query, and a list of available tools, "
             "first rewrite the query by resolving only ambiguous pronouns or omitted "
-            "references using the conversation history. If there are no ambiguous "
-            "pronouns or omitted references, rewrited_query may be identical to the "
-            "user query. Then, based on the rewrited_query, select the most appropriate "
+            "references using the conversation history. Then, based on the rewrited_query, select the most appropriate "
             "tool and generate its arguments. Only use parameter values that are "
             "explicitly stated or can be reasonably inferred from the query or "
             "conversation history. Return compact JSON only with keys "
             "\"rewrited_query\", \"plan\", and \"arguments\". Always include all three "
-            "keys. The value of \"arguments\" must always be an object. If no tool "
-            "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}.\n"
+            "keys. The value of \"arguments\" must always be an object.\n"
             f"<|tool|>{api_str}<|/tool|>"
         )
     if prompt_option in {"prompt4", "prompt5"}:
         return (
             "Given a conversation history, a user query, and a list of available tools, "
             "first rewrite the query by resolving only ambiguous pronouns or omitted "
-            "references using the conversation history. If there are no ambiguous "
-            "pronouns or omitted references, rewrited_query may be identical to the "
-            "user query. Then, based on the rewrited_query, select the most appropriate "
+            "references using the conversation history. Then, based on the rewrited_query, select the most appropriate "
             "tool and generate its arguments. Only use parameter values that are "
             "explicitly stated or can be reasonably inferred from the query or "
             "conversation history. Return compact JSON only with keys "
             "\"rewrited_query\", \"plan\", and \"arguments\". Always include all three "
-            "keys. The value of \"arguments\" must always be an object. If no tool "
-            "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}.\n"
+            "keys. The value of \"arguments\" must always be an object.\n"
             "Below are a few examples. Learn the pattern of rewriting and tool selection "
             "from them. Do not copy their contents."
         )
@@ -143,29 +164,24 @@ def build_system_message(api_str: str, prompt_option: str = "prompt1") -> str:
         return (
             "Given a conversation history, a user query, and a list of available tools, "
             "first rewrite the query by resolving only ambiguous pronouns or omitted "
-            "references using the conversation history. If there are no ambiguous "
-            "pronouns or omitted references, rewrited_query may be identical to the "
-            "user query. Then, based on the rewrited_query, select the most appropriate "
+            "references using the conversation history. Then, based on the rewrited_query, select the most appropriate "
             "tool and generate its arguments. Only use parameter values that are "
             "explicitly stated or can be reasonably inferred from the query or "
             "conversation history. Return compact JSON only with keys "
             "\"rewrited_query\", \"plan\", and \"arguments\". Always include all three "
-            "keys. The value of \"arguments\" must always be an object. If no tool "
-            "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}.\n"
+            "keys. The value of \"arguments\" must always be an object.\n"
             "Below are a few rewriting-only examples. They show how to rewrite the "
             "user query, not how to choose the final tool call. For the actual task, "
             "you must still return the full JSON with rewrited_query, plan, and "
             "arguments. The final plan must be one of the available tools for the "
-            "actual task or \"None\", and arguments must use only fields supported by "
+            "actual task, and arguments must use only fields supported by "
             "the selected tool."
         )
     if prompt_option == "prompt2":
         return (
             "Given a conversation history, a user query, and a list of available tools, "
             "first rewrite the query by resolving only ambiguous pronouns or omitted "
-            "references using the conversation history. If there are no ambiguous "
-            "pronouns or omitted references, rewrited_query may be identical to the "
-            "user query. Use the entire conversation history to resolve references. "
+            "references using the conversation history. Use the entire conversation history to resolve references. "
             "The relevant context may come from the immediately previous turn or from "
             "any earlier turn. Choose the prior mention that best matches the user's "
             "current request, rather than always using the most recent turn. Then, "
@@ -174,35 +190,69 @@ def build_system_message(api_str: str, prompt_option: str = "prompt1") -> str:
             "be reasonably inferred from the query or conversation history. Return "
             "compact JSON only with keys "
             "\"rewrited_query\", \"plan\", and \"arguments\". Always include all three "
-            "keys. The value of \"arguments\" must always be an object. If no tool "
-            "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}.\n"
+            "keys. The value of \"arguments\" must always be an object.\n"
             f"<|tool|>{api_str}<|/tool|>"
         )
     raise ValueError(f"Unsupported prompt_option: {prompt_option}")
 
 
-def build_user_content(conversation_history: str, query: str) -> str:
+def build_user_content(
+    conversation_history: str,
+    query: str,
+    reference_turn: str | None = None,
+    user_content_format: str = "text",
+) -> str:
+    if user_content_format == "json":
+        data = {
+            "conversation_history": conversation_history,
+        }
+        if reference_turn:
+            data["reference_turn"] = reference_turn
+        data["query"] = query
+        return json.dumps(data, ensure_ascii=False, indent=2)
+
+    if user_content_format != "text":
+        raise ValueError(f"Unsupported user_content_format: {user_content_format}")
+
+    if reference_turn:
+        return (
+            f"Conversation History: {conversation_history}\n"
+            f"Reference Turn: {reference_turn}\n"
+            f"User Query: {query}"
+        )
     return f"Conversation History: {conversation_history}\nUser Query: {query}"
 
 
-def build_prompt4_user_content(api_str: str, conversation_history: str, query: str) -> str:
+def build_prompt4_user_content(
+    api_str: str,
+    conversation_history: str,
+    query: str,
+    reference_turn: str | None = None,
+    user_content_format: str = "text",
+) -> str:
     return (
         "Now solve the actual task. Use only the following available tools.\n"
         f"<|tool|>{api_str}<|/tool|>\n"
-        f"{build_user_content(conversation_history, query)}"
+        f"{build_user_content(conversation_history, query, reference_turn=reference_turn, user_content_format=user_content_format)}"
     )
 
 
-def build_prompt4_rewriting_user_content(api_str: str, conversation_history: str, query: str) -> str:
+def build_prompt4_rewriting_user_content(
+    api_str: str,
+    conversation_history: str,
+    query: str,
+    reference_turn: str | None = None,
+    user_content_format: str = "text",
+) -> str:
     return (
         "Now solve the actual task. The examples above demonstrate rewriting only. "
         "Use only the following available tools for the final answer.\n"
         f"<|tool|>{api_str}<|/tool|>\n"
         "Return compact JSON with keys \"rewrited_query\", \"plan\", and "
         "\"arguments\". The value of \"plan\" must be one of the available tools "
-        "listed above or \"None\". The value of \"arguments\" must be an object and "
+        "listed above. The value of \"arguments\" must be an object and "
         "must contain only parameters supported by the selected tool.\n"
-        f"{build_user_content(conversation_history, query)}"
+        f"{build_user_content(conversation_history, query, reference_turn=reference_turn, user_content_format=user_content_format)}"
     )
 
 
@@ -287,7 +337,15 @@ def build_history_few_shot_messages():
     return messages
 
 
-def build_oneshot_messages(conversation_history: str, query: str, candidates, apis, prompt_option: str = "prompt1"):
+def build_oneshot_messages(
+    conversation_history: str,
+    query: str,
+    candidates,
+    apis,
+    prompt_option: str = "prompt1",
+    reference_turn: str | None = None,
+    user_content_format: str = "text",
+):
     api_str = build_api_str_from_candidates(candidates, apis)
     messages = [
         {"role": "system", "content": build_system_message(api_str, prompt_option=prompt_option)},
@@ -300,7 +358,13 @@ def build_oneshot_messages(conversation_history: str, query: str, candidates, ap
         messages.append(
             {
                 "role": "user",
-                "content": build_prompt4_user_content(api_str, conversation_history, query),
+                "content": build_prompt4_user_content(
+                    api_str,
+                    conversation_history,
+                    query,
+                    reference_turn=reference_turn,
+                    user_content_format=user_content_format,
+                ),
             }
         )
     elif prompt_option == "prompt4-rewriting":
@@ -308,16 +372,46 @@ def build_oneshot_messages(conversation_history: str, query: str, candidates, ap
             {
                 "role": "user",
                 "content": build_prompt4_rewriting_user_content(
-                    api_str, conversation_history, query
+                    api_str,
+                    conversation_history,
+                    query,
+                    reference_turn=reference_turn,
+                    user_content_format=user_content_format,
                 ),
             }
         )
     else:
-        messages.append({"role": "user", "content": build_user_content(conversation_history, query)})
+        messages.append(
+            {
+                "role": "user",
+                "content": build_user_content(
+                    conversation_history,
+                    query,
+                    reference_turn=reference_turn,
+                    user_content_format=user_content_format,
+                ),
+            }
+        )
     return messages
 
 
+def _with_smollm3_system_override(messages, model_name: str):
+    if "smollm3" not in str(model_name).lower():
+        return messages
+    if not messages or messages[0].get("role") != "system":
+        return messages
+
+    patched_messages = [dict(message) for message in messages]
+    system_content = str(patched_messages[0].get("content", "")).rstrip()
+    if "/system_override" not in system_content:
+        patched_messages[0]["content"] = (
+            f"{system_content} /system_override" if system_content else "/system_override"
+        )
+    return patched_messages
+
+
 def render_chat_template(tokenizer, messages, add_generation_prompt: bool, model_name: str) -> str:
+    messages = _with_smollm3_system_override(messages, model_name)
     kwargs = {
         "tokenize": False,
         "add_generation_prompt": add_generation_prompt,

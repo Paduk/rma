@@ -35,7 +35,7 @@ from llama_prompts import SFT_RMA_TRAIN_QWEN3
 DEFAULT_MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct" #"Qwen/Qwen3-4B"
 DEFAULT_OUTPUT_ROOT = Path("/mnt/data/hj153lee/rma_train")
 DEFAULT_OUTPUT_TAG = "sentence-rewriter"
-DEFAULT_NUM_TRAIN_EPOCHS = 5
+DEFAULT_NUM_TRAIN_EPOCHS = 4
 TRAIN_EXCLUDE_PATTERNS = ("_NR_",)
 ADDITION_INCLUDE_PATTERNS = ("complex", "various_nonNR")
 EXTRA_TRAIN_FILES = ("it2_NR_train.tsv",)
