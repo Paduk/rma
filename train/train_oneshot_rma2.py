@@ -350,6 +350,13 @@ def resolve_trust_remote_code_arg(args, default: bool = True) -> bool:
     return default
 
 
+def resolve_model_trust_remote_code(args, model_name: str) -> bool:
+    return resolve_trust_remote_code_arg(
+        args,
+        default=not is_phi_model(model_name),
+    )
+
+
 def get_config_architecture(config) -> str | None:
     architectures = getattr(config, "architectures", None)
     if architectures:
@@ -956,6 +963,20 @@ class DataCollatorForCausalLM:
         return self.tokenizer.pad(features, padding=True, return_tensors="pt")
 
 
+def format_lora_target_modules(target_modules) -> str:
+    if target_modules is None:
+        return "None"
+    if isinstance(target_modules, str):
+        return target_modules
+    if isinstance(target_modules, set):
+        return ",".join(sorted(str(module) for module in target_modules))
+    return ",".join(str(module) for module in target_modules)
+
+
+def format_float(value: float) -> str:
+    return f"{value:g}"
+
+
 def main():
     args = parse_args()
     args.model_name = resolve_profile_model_name(
@@ -981,7 +1002,7 @@ def main():
     )
 
     apply_postprocess_defaults(args, args.model_name, output_root)
-    trust_remote_code = resolve_trust_remote_code_arg(args, default=True)
+    trust_remote_code = resolve_model_trust_remote_code(args, args.model_name)
     config = AutoConfig.from_pretrained(
         args.model_name,
         cache_dir=str(cache_dir),
@@ -1018,6 +1039,7 @@ def main():
     print(f"default_gguf_path: {args.gguf_path}")
     print(f"default_ollama_model_name: {args.ollama_model_name}")
     print(f"chat_template_fallback: {args.chat_template_fallback}")
+    print(f"training_epochs: {format_float(args.num_train_epochs)}")
 
     if args.postprocess_only:
         postprocess_trained_model(
@@ -1079,13 +1101,29 @@ def main():
     print()
     print(f"max total length: {max_total_length(processed_train)}")
 
-    model = get_peft_model(model, build_lora_config(args.model_name))
+    lora_config = build_lora_config(args.model_name)
+    print(
+        "LoRA config: "
+        f"r={lora_config.r}, "
+        f"alpha={lora_config.lora_alpha}, "
+        f"dropout={lora_config.lora_dropout}, "
+        f"target_modules={format_lora_target_modules(lora_config.target_modules)}"
+    )
+
+    model = get_peft_model(model, lora_config)
     trainable_params = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
     total_params = sum(parameter.numel() for parameter in model.parameters())
+    trainable_millions = trainable_params / 1_000_000
+    total_millions = total_params / 1_000_000
+    trainable_percent = 100 * trainable_params / total_params
+    print(
+        f"LoRA params: {trainable_millions:.1f} M / "
+        f"Total: {total_millions:.1f} M ({trainable_percent:.2f}%)"
+    )
     print(
         "Trainable Parameters: "
         f"{trainable_params}, Total Parameters: {total_params}, "
-        f"Training Rate: {100 * trainable_params / total_params:.2f}%"
+        f"Training Rate: {trainable_percent:.2f}%"
     )
 
     training_args = TrainingArguments(

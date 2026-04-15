@@ -14,6 +14,7 @@ RMA_MODEL_PROFILES = {
     "qwen": RmaModelProfile("Qwen/Qwen3-4B"),
     "qwen3-1.7b": RmaModelProfile("Qwen/Qwen3-1.7B"),
     "qwen3-0.6b": RmaModelProfile("Qwen/Qwen3-0.6B"),
+    "qwen2.5": RmaModelProfile("Qwen/Qwen2.5-3B-Instruct"),
     "phi": RmaModelProfile("microsoft/Phi-4-mini-instruct"),
     "llama": RmaModelProfile("meta-llama/Llama-3.2-3B-Instruct"),
     "gemma": RmaModelProfile("google/gemma-3-4b-it"),

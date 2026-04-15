@@ -54,6 +54,7 @@ LLAMA_DEFAULT_MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 
 GENERIC_PROFILE_NAMES = {
     "generic",
+    "qwen2.5",
     "glm-edge-1.5b",
     "glm-edge-4b",
     "smollm2-1.7b",
@@ -132,6 +133,12 @@ PROFILE_DEFAULTS = {
     ),
     "generic": ProfileDefaults(
         model_name="",
+        train_type="history",
+        prefix="baseline_all_linear",
+        max_len=1536,
+    ),
+    "qwen2.5": ProfileDefaults(
+        model_name="Qwen/Qwen2.5-3B-Instruct",
         train_type="history",
         prefix="baseline_all_linear",
         max_len=1536,

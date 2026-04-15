@@ -49,6 +49,7 @@ class BaselinePromptProfile:
 
 BASELINE_PROMPT_PROFILES = {
     "qwen": BaselinePromptProfile("Qwen/Qwen3-4B", "baseline_all_linear"),
+    "qwen2.5": BaselinePromptProfile("Qwen/Qwen2.5-3B-Instruct", "baseline_all_linear"),
     "phi": BaselinePromptProfile("microsoft/Phi-4-mini-instruct", "baseline_1st"),
     "llama": BaselinePromptProfile("meta-llama/Llama-3.2-3B-Instruct", "baseline_all_linear"),
     "generic": BaselinePromptProfile("", "baseline_all_linear"),

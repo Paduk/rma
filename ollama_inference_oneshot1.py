@@ -22,7 +22,6 @@ if str(TRAIN_DIR) not in sys.path:
 
 from oneshot_qwen_prompt import (
     build_oneshot_messages,
-    build_user_content,
     render_chat_template,
     render_messages_as_plain_text,
     resolve_prompt_tokenizer_name,
@@ -34,7 +33,6 @@ DEFAULT_HOST = "http://localhost:11436"
 DEFAULT_MODEL_NAME = "qwen3-oneshot:latest"
 DEFAULT_PROMPT_TOKENIZER_NAME = None
 LLAMA_MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
-ONESHOT_PROMPT_OPTION = "reference-turn"
 GLM_STOP_SEQUENCES = [
     "<|observation|>",
     "<|system|>",
@@ -46,15 +44,13 @@ PROFILE_STOP_SEQUENCES = {
     "glm-edge-4b": GLM_STOP_SEQUENCES,
 }
 ONESHOT_SYSTEM_PROMPT = (
-    "Given a conversation history, a query, and a list of available tools, "
-    "first write rewrited_query. Use only the dialogue in reference_turn "
-    "from conversation_history together with the query to resolve ambiguous "
-    "pronouns or omitted references. Then, based on the "
-    "rewrited_query, select the most appropriate tool and generate its arguments. "
-    "Only use parameter values that are explicitly stated or can be reasonably "
-    "inferred from the rewrited_query. Return compact JSON only with keys "
+    "Given a conversation history, a user query, and a list of available tools, "
+    "first rewrite the query by resolving ambiguous references using the "
+    "conversation history. Then select the most appropriate tool and generate "
+    "its arguments. Return compact JSON only with keys "
     "\"rewrited_query\", \"plan\", and \"arguments\". Always include all three "
-    "keys. The value of \"arguments\" must always be an object."
+    "keys. The value of \"arguments\" must always be an object. If no tool "
+    "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}."
 )
 """
 python3 /home/hj153lee/RMA/ollama_inference_oneshot.py \
@@ -311,56 +307,6 @@ def parse_literal(raw_value, field_name: str):
     return ast.literal_eval(raw_value)
 
 
-def parse_conversation_history_turns(conversation_history):
-    if conversation_history is None:
-        return []
-
-    if isinstance(conversation_history, list):
-        history_items = conversation_history
-    else:
-        history_text = str(conversation_history).strip()
-        try:
-            parsed_history = ast.literal_eval(history_text)
-            history_items = parsed_history if isinstance(parsed_history, list) else [history_text]
-        except (ValueError, SyntaxError):
-            history_items = [history_text]
-
-    turns = []
-    for item in history_items:
-        match = re.search(r"\bturn\s+(\d+)\s*:", str(item), flags=re.IGNORECASE)
-        if match:
-            turns.append(int(match.group(1)))
-    return turns
-
-
-def build_reference_turn(source_file, conversation_history):
-    if not source_file:
-        return None
-
-    file_name = Path(str(source_file)).name
-    lower_file_name = file_name.lower()
-
-    complex_match = re.search(
-        r"(?:^|_)complex(?:_history)?_(\d+)(?:_|\.|$)",
-        lower_file_name,
-    )
-    if complex_match:
-        return f"turn {int(complex_match.group(1))}"
-
-    if "nonnr" in lower_file_name:
-        turns = parse_conversation_history_turns(conversation_history)
-        if turns:
-            reference_turn = max(turns)
-        else:
-            it_match = re.search(r"(?:^|_)it(\d+)(?:_|$)", lower_file_name)
-            if not it_match:
-                return None
-            reference_turn = max(int(it_match.group(1)) - 1, 1)
-        return f"turn {reference_turn}"
-
-    return None
-
-
 def load_prompt_tokenizer(model_name: str):
     try:
         from transformers import AutoTokenizer
@@ -469,17 +415,11 @@ def build_llama_prompts(
     conversation_history: str,
     query: str,
     target_json: str,
-    reference_turn: str | None = None,
 ):
-    user_payload = build_user_content(
-        conversation_history=conversation_history,
-        query=query,
-        reference_turn=reference_turn,
-        user_content_format="json",
-    )
     user_content = (
         f"Tools: {api_str}\n"
-        f"{user_payload}"
+        f"Conversation History: {conversation_history}\n"
+        f"User Query: {query}"
     )
     prompt_prefix = (
         "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
@@ -526,17 +466,12 @@ def build_oneshot_prompt(
 ) -> str:
     candidates = parse_literal(example["candidates"], "candidates")
     api_str = "\n".join(f"{plan_name}: {apis[plan_name].copy()}" for plan_name in candidates)
-    reference_turn = build_reference_turn(
-        source_file=source_file or example.get("source_file"),
-        conversation_history=example.get("conversation_history"),
-    )
     if is_llama_prompt_model(prompt_model_name):
         prompt_prefix, _ = build_llama_prompts(
             api_str=api_str,
             conversation_history=example["conversation_history"],
             query=example["query"],
             target_json="",
-            reference_turn=reference_turn,
         )
         return prompt_prefix
 
@@ -545,9 +480,6 @@ def build_oneshot_prompt(
         query=example["query"],
         candidates=candidates,
         apis=apis,
-        prompt_option=ONESHOT_PROMPT_OPTION,
-        reference_turn=reference_turn,
-        user_content_format="json",
     )
     return render_model_messages(
         tokenizer=prompt_tokenizer,

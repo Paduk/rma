@@ -52,6 +52,10 @@ GENERIC_PROMPT_PROFILES = {
         "prefix": "all_linear",
         "stop": GLM_STOP_SEQUENCES,
     },
+    "qwen2.5": {
+        "prompt_model_name": "Qwen/Qwen2.5-3B-Instruct",
+        "prefix": "all_linear",
+    },
     "smollm2-1.7b": {
         "prompt_model_name": "HuggingFaceTB/SmolLM2-1.7B",
         "prefix": "simple_template",
