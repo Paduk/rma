@@ -4,19 +4,28 @@ import os
 import requests
 import ast
 import argparse
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from datasets import load_dataset
 import pdb
 import pandas as pd
 from tqdm import tqdm
 from filter import JsonExtractor
-from functools import partial
 from train.llama_prompts import ZERO_REWRITE_INFERENCE_LLAMA, ZERO_HISTORY_INFERENCE_LLAMA, SFT_REWRITE_INFERENCE_LLAMA, SFT_HISTORY_INFERENCE_LLAMA
 from train.gemma_prompts import SFT_REWRITE_INFERENCE_GEMMA, SFT_HISTORY_INFERENCE_GEMMA
 from train.llama_prompts import SFT_REWRITE_INFERENCE_PHI4, SFT_HISTORY_INFERENCE_PHI4, ZERO_REWRITE_INFERENCE_PHI4, ZERO_HISTORY_INFERENCE_PHI4
 from train.llama_prompts import SFT_REWRITE_INFERENCE_QWEN25, SFT_HISTORY_INFERENCE_QWEN25, ZERO_REWRITE_INFERENCE_QWEN25, ZERO_HISTORY_INFERENCE_QWEN25
 from train.llama_prompts import SFT_REWRITE_INFERENCE_QWEN3, SFT_HISTORY_INFERENCE_QWEN3, ZERO_REWRITE_INFERENCE_QWEN3, ZERO_HISTORY_INFERENCE_QWEN3
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+UTILS_DIR = PROJECT_ROOT / "utils"
+if str(UTILS_DIR) not in sys.path:
+    sys.path.insert(0, str(UTILS_DIR))
+
+from history_retrieval import (
+    DEFAULT_RETRIEVAL_MODEL_NAME,
+    build_history_selector,
+)
 
 GENERIC_SYSTEM_HISTORY_PROMPT = (
     "You are a helpful assistant capable of selecting appropriate tools based on "
@@ -124,6 +133,17 @@ def get_arg_parse():
     parser.add_argument('--host', type=str, default="http://localhost:11436", help='Ollama host URL')
     parser.add_argument('--temperature', type=float, default=0.0, help='Ollama sampling temperature')
     parser.add_argument(
+        '--dry_run',
+        action='store_true',
+        help='Print selected history turns and rendered prompts, then skip Ollama API calls.',
+    )
+    parser.add_argument(
+        '--dry_run_limit',
+        type=int,
+        default=3,
+        help='Examples to print per file in --dry_run. Use 0 for all rows.',
+    )
+    parser.add_argument(
         '--multi',
         '--num_parallel',
         dest='num_parallel',
@@ -149,6 +169,61 @@ def get_arg_parse():
         default=None,
         choices=['none', 'minimal', 'low', 'medium', 'high', 'xhigh'],
         help='OpenAI reasoning effort for supported reasoning models.',
+    )
+    parser.add_argument(
+        '--history_selection',
+        choices=['full', 'last_k', 'retrieval'],
+        default='full',
+        help='History input mode for base/history evaluation. Default: full.',
+    )
+    parser.add_argument(
+        '--history_top_k',
+        type=int,
+        default=2,
+        help='Number of turns to keep for --history_selection last_k/retrieval.',
+    )
+    parser.add_argument(
+        '--retrieval_model_name',
+        default=DEFAULT_RETRIEVAL_MODEL_NAME,
+        help='Embedding model used by --history_selection retrieval.',
+    )
+    parser.add_argument(
+        '--retrieval_device',
+        default='cpu',
+        help='Device for retrieval encoder: cpu, cuda, cuda:0, or auto. Default: cpu.',
+    )
+    parser.add_argument(
+        '--retrieval_max_length',
+        type=int,
+        default=512,
+        help='Max token length for retrieval encoder inputs.',
+    )
+    parser.add_argument(
+        '--retrieval_recency_lambda',
+        type=float,
+        default=0.1,
+        help='Recency bonus weight added to cosine similarity.',
+    )
+    parser.add_argument(
+        '--retrieval_query_prefix',
+        default='',
+        help='Optional prefix prepended to the query before embedding.',
+    )
+    parser.add_argument(
+        '--retrieval_document_prefix',
+        default='',
+        help='Optional prefix prepended to each history turn before embedding.',
+    )
+    parser.add_argument(
+        '--retrieval_order',
+        choices=['original', 'score'],
+        default='original',
+        help='Order for selected turns in the prompt. Default keeps dialogue order.',
+    )
+    parser.add_argument(
+        '--retrieval_renumber_turns',
+        action='store_true',
+        help='Renumber selected history turns as turn 1, turn 2, ... in the prompt.',
     )
     return parser.parse_args()
 
@@ -546,6 +621,11 @@ def evaluate_multi_example(row_idx, ex, test_key, file_name, model_name, host, s
     row = {
         "test_key":             test_key,
         "conversation_history": ex.get("conversation_history"),
+        "original_conversation_history": ex.get("original_conversation_history"),
+        "history_selection":    ex.get("history_selection"),
+        "selected_turn_ids":    ex.get("selected_turn_ids"),
+        "retrieval_scores":     ex.get("retrieval_scores"),
+        "original_turn_count":  ex.get("original_turn_count"),
         "query":                ex.get("query"),
         "rewrited_query":       ex.get("rewrited_query"),
         "candidates":           ex.get("candidates"),
@@ -562,6 +642,35 @@ def evaluate_multi_example(row_idx, ex, test_key, file_name, model_name, host, s
     return row_idx, row, error_message
 
 
+def print_dry_run_examples(proc, test_key, file_path, limit):
+    file_name = os.path.basename(file_path)
+    if limit < 0:
+        raise ValueError("--dry_run_limit must be >= 0.")
+
+    preview_count = len(proc) if limit == 0 else min(limit, len(proc))
+    print(
+        f"\n[dry_run] split={test_key} file={file_name} "
+        f"showing={preview_count}/{len(proc)}"
+    )
+    for row_idx, ex in enumerate(proc[:preview_count]):
+        print("\n" + "=" * 100)
+        print(f"[dry_run] row={row_idx}")
+        print(f"query: {ex.get('query')}")
+        print(f"rewrited_query: {ex.get('rewrited_query')}")
+        print(f"history_selection: {ex.get('history_selection')}")
+        print(f"original_turn_count: {ex.get('original_turn_count')}")
+        print(f"selected_turn_ids: {ex.get('selected_turn_ids')}")
+        print(f"retrieval_scores: {ex.get('retrieval_scores')}")
+        print("\n[original_conversation_history]")
+        print(ex.get("original_conversation_history"))
+        print("\n[selected_conversation_history]")
+        print(ex.get("conversation_history"))
+        print("\n[rendered_prompt]")
+        print(ex.get("strprompt"))
+    print("\n" + "=" * 100)
+    print("[dry_run] skipped Ollama API calls for this file.")
+
+
 """
 python3 /home/hj153lee/RMA/ollama_inference_multi.py \
 --t new-base-qwen3 \
@@ -573,10 +682,20 @@ def main(out_file):
     if args.num_parallel < 1:
         raise ValueError("--multi/--num_parallel must be >= 1.")
 
+    try:
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise RuntimeError(
+            "The Hugging Face datasets package is required to load eval TSV files."
+        ) from exc
+
     #apis = read_apis("apis/api_v3.0.1.jsonl", simple=False)    
     sft_apis = read_apis("apis/simple_api.json", simple=True)    
-    out_path = Path(out_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = Path(out_file) if out_file else None
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    elif not args.dry_run:
+        raise ValueError("--o is required unless --dry_run is set.")
     test_type_config = {
         "base-phi4": {
             "model_name": "phi4-base:latest",
@@ -723,6 +842,30 @@ def main(out_file):
         raise ValueError(f"Invalid test type: {test_type}. Available test types: {valid_test_types}")
 
     model_name = args.model or config["model_name"]
+    prompt_mode = config["prompt_mode"]
+    if args.history_selection != "full" and prompt_mode not in ("base", "history"):
+        raise ValueError(
+            "--history_selection can only be used with base/history prompt modes. "
+            f"Current prompt_mode={prompt_mode}."
+        )
+
+    history_selector = None
+    if args.history_selection != "full":
+        if args.history_top_k < 0:
+            raise ValueError("--history_top_k must be >= 0.")
+        history_selector = build_history_selector(
+            strategy=args.history_selection,
+            top_k=args.history_top_k,
+            retrieval_model_name=args.retrieval_model_name,
+            retrieval_device=args.retrieval_device,
+            retrieval_max_length=args.retrieval_max_length,
+            retrieval_query_prefix=args.retrieval_query_prefix,
+            retrieval_document_prefix=args.retrieval_document_prefix,
+            retrieval_recency_lambda=args.retrieval_recency_lambda,
+            retrieval_order=args.retrieval_order,
+            retrieval_renumber_turns=args.retrieval_renumber_turns,
+        )
+
     prompt_tokenizer = None
     if config.get("prompt_renderer") == "chat_template":
         prompt_tokenizer = load_prompt_tokenizer(config)
@@ -828,8 +971,18 @@ def main(out_file):
     print(args.host)
     if args.num_parallel > 1:
         print(f"num_parallel: {args.num_parallel}")
+    print(f"history_selection: {args.history_selection}")
+    if args.history_selection != "full":
+        print(
+            "history_selection_config: "
+            f"top_k={args.history_top_k}, "
+            f"recency_lambda={args.retrieval_recency_lambda}, "
+            f"order={args.retrieval_order}, "
+            f"renumber_turns={args.retrieval_renumber_turns}, "
+            f"model={args.retrieval_model_name}"
+        )
     # 데이터 예시 전처리 함수
-    def preprocess_example_it(example, apis, config, prompt_tokenizer=None):
+    def preprocess_example_it(example, apis, config, prompt_tokenizer=None, history_selector=None):
         api_str = ""
         #re_fmt  = {"plan": "str type tool", "arguments": {"key1": "value1"}}        
         for plan in ast.literal_eval(example["candidates"]):
@@ -837,9 +990,26 @@ def main(out_file):
             api_str += f"{plan}: {api_data}\n"
 
         prompt_mode = config["prompt_mode"]
+        prompt_example = example
+        history_selection_name = "full"
+        selected_turn_ids = []
+        retrieval_scores = []
+        original_turn_count = None
+        if history_selector is not None and prompt_mode in ("base", "history"):
+            selection_result = history_selector.select(
+                conversation_history=example["conversation_history"],
+                query=example["query"],
+            )
+            prompt_example = dict(example)
+            prompt_example["conversation_history"] = selection_result.conversation_history
+            history_selection_name = history_selector.strategy
+            selected_turn_ids = selection_result.selected_turn_ids
+            retrieval_scores = selection_result.selected_scores
+            original_turn_count = selection_result.original_turn_count
+
         if config.get("prompt_renderer") == "chat_template":
             prompt = render_generic_inference_prompt(
-                example=example,
+                example=prompt_example,
                 api_str=api_str,
                 tokenizer=prompt_tokenizer,
                 prompt_mode=prompt_mode,
@@ -850,8 +1020,8 @@ def main(out_file):
             prompt = prompt_template.format(
                 tools=api_str,
                 #re_format=json.dumps(re_fmt, ensure_ascii=False, indent=2),
-                conversation_history=example["conversation_history"],
-                data=example["query"]
+                conversation_history=prompt_example["conversation_history"],
+                data=prompt_example["query"]
             )
         elif prompt_mode == "rewrite":
             prompt_template = config["prompt_template"]
@@ -869,7 +1039,12 @@ def main(out_file):
             "candidates":   example["candidates"],
             "rewrited_query": example["rewrited_query"],
             "query":        example["query"],
-            "conversation_history": example["conversation_history"],
+            "conversation_history": prompt_example["conversation_history"],
+            "original_conversation_history": example["conversation_history"],
+            "history_selection": history_selection_name,
+            "selected_turn_ids": json.dumps(selected_turn_ids, ensure_ascii=False),
+            "retrieval_scores": json.dumps(retrieval_scores, ensure_ascii=False),
+            "original_turn_count": original_turn_count,
         }
     
     all_results = []
@@ -881,19 +1056,30 @@ def main(out_file):
         for file_path in data_files[test_key]:
             ds = load_dataset('csv', data_files={'tc':[file_path]}, delimiter='\t')['tc']
             # 전처리
-            proc = ds.map(
-                partial(
-                    preprocess_example_it,
+            proc = [
+                preprocess_example_it(
+                    example,
                     apis=sft_apis,
                     config=config,
                     prompt_tokenizer=prompt_tokenizer,
+                    history_selector=history_selector,
                 )
-            )
+                for example in ds
+            ]
             # else:
             #     proc = ds.map(
             #         partial(preprocess_example_it, apis=apis, prompt_template=prompt_template, test_type=test_type)
             #     )
             # 평가
+            if args.dry_run:
+                print_dry_run_examples(
+                    proc=proc,
+                    test_key=test_key,
+                    file_path=file_path,
+                    limit=args.dry_run_limit,
+                )
+                continue
+
             print(proc[0]["strprompt"])
             #exit(0)
             file_results = []
@@ -947,6 +1133,11 @@ def main(out_file):
                     row = {
                         "test_key":             test_key,
                         "conversation_history": ex.get("conversation_history"),
+                        "original_conversation_history": ex.get("original_conversation_history"),
+                        "history_selection":    ex.get("history_selection"),
+                        "selected_turn_ids":    ex.get("selected_turn_ids"),
+                        "retrieval_scores":     ex.get("retrieval_scores"),
+                        "original_turn_count":  ex.get("original_turn_count"),
                         "query":                ex.get("query"),
                         "rewrited_query":       ex.get("rewrited_query"),
                         "candidates":           ex.get("candidates"),
@@ -1000,6 +1191,10 @@ def main(out_file):
             df_file = pd.DataFrame(file_results)
             print_eval(df_file, title=f"{test_key}/{os.path.basename(file_path)}", test_type=model_name)
             all_results.extend(file_results)
+
+    if args.dry_run:
+        print("\n[dry_run] completed without calling Ollama or writing result TSV.")
+        return
 
     result = pd.DataFrame(all_results)
     for test_key in test_keys:
