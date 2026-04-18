@@ -14,15 +14,6 @@ TURN_WEIGHT_SCHEMES = {
     }
 }
 
-# REVERSED_TURN_WEIGHT_SCHEMES = {
-#     "curriculum": {
-#         2: {"nonNR": 1},
-#         3: {"complex_1": 3, "nonNR": 7},
-#         4: {"complex_1": 2, "complex_2": 3, "nonNR": 5},
-#         5: {"complex_1": 1, "complex_2": 2, "complex_3": 3, "nonNR": 4},
-#     }
-# }
-
 REVERSED_TURN_WEIGHT_SCHEMES = {
     "curriculum": {
         2: {"nonNR": 1},
@@ -32,14 +23,14 @@ REVERSED_TURN_WEIGHT_SCHEMES = {
     }
 }
 
-REVERSED_TURN_WEIGHT_SCHEMES = {
-    "curriculum": {
-        2: {"nonNR": 1},
-        3: {"complex_1": 3, "nonNR": 7},
-        4: {"complex_1": 1, "complex_2": 6, "nonNR": 3},
-        5: {"complex_1": 1, "complex_2": 2, "complex_3": 3, "nonNR": 4},
-    }
-}
+# REVERSED_TURN_WEIGHT_SCHEMES = {
+#     "curriculum": {
+#         2: {"nonNR": 1},
+#         3: {"complex_1": 3, "nonNR": 7},
+#         4: {"complex_1": 1, "complex_2": 6, "nonNR": 3},
+#         5: {"complex_1": 1, "complex_2": 2, "complex_3": 3, "nonNR": 4},
+#     }
+# }
 
 def maybe_reverse_bucket_weights(bucket_weights, reverse=False):
     if not reverse:

@@ -1070,16 +1070,16 @@ def main(out_file):
 
     data_files = {      
         'humanvalid': [
-            'datasets/tc/human-eval/turn2.tsv',
-            'datasets/tc/human-eval/turn3.tsv',
-            'datasets/tc/human-eval/turn3_ref2.tsv',
-            'datasets/tc/human-eval/turn4.tsv',
-            'datasets/tc/human-eval/turn4_ref2.tsv',
-            'datasets/tc/human-eval/turn4_ref3.tsv',
-            'datasets/tc/human-eval/turn5.tsv',
-            'datasets/tc/human-eval/turn5_ref2.tsv',
-            'datasets/tc/human-eval/turn5_ref3.tsv',
-            'datasets/tc/human-eval/turn5_ref4.tsv',
+            'datasets/tc/human-eval/it2_nonNR_tc.tsv',
+            'datasets/tc/human-eval/it3_complex_1_tc.tsv',
+            'datasets/tc/human-eval/it3_nonNR_tc.tsv',
+            'datasets/tc/human-eval/it4_complex_1_tc.tsv',
+            'datasets/tc/human-eval/it4_complex_2_tc.tsv',            
+            'datasets/tc/human-eval/it4_nonNR_tc.tsv',
+            'datasets/tc/human-eval/it5_complex_1_tc.tsv',
+            'datasets/tc/human-eval/it5_complex_2_tc.tsv',
+            'datasets/tc/human-eval/it5_complex_3_tc.tsv',
+            'datasets/tc/human-eval/it5_nonNR_tc.tsv',
         ],
         'base': [                                      
             'datasets/tc/scale/it2_nonNR_tc.tsv',
