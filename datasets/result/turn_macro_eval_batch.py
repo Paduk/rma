@@ -14,6 +14,15 @@ TURN_WEIGHT_SCHEMES = {
     }
 }
 
+# REVERSED_TURN_WEIGHT_SCHEMES = {
+#     "curriculum": {
+#         2: {"nonNR": 1},
+#         3: {"complex_1": 3, "nonNR": 7},
+#         4: {"complex_1": 2, "complex_2": 3, "nonNR": 5},
+#         5: {"complex_1": 1, "complex_2": 2, "complex_3": 3, "nonNR": 4},
+#     }
+# }
+
 REVERSED_TURN_WEIGHT_SCHEMES = {
     "curriculum": {
         2: {"nonNR": 1},
@@ -23,6 +32,14 @@ REVERSED_TURN_WEIGHT_SCHEMES = {
     }
 }
 
+REVERSED_TURN_WEIGHT_SCHEMES = {
+    "curriculum": {
+        2: {"nonNR": 1},
+        3: {"complex_1": 3, "nonNR": 7},
+        4: {"complex_1": 1, "complex_2": 6, "nonNR": 3},
+        5: {"complex_1": 1, "complex_2": 2, "complex_3": 3, "nonNR": 4},
+    }
+}
 
 def maybe_reverse_bucket_weights(bucket_weights, reverse=False):
     if not reverse:
@@ -466,6 +483,24 @@ def list_input_tsv_files(input_dir):
     )
 
 
+def extract_model_method_from_filename(file_name):
+    stem = Path(file_name).stem
+    parts = stem.split("-")
+    if not parts:
+        return "", ""
+    return parts[0], parts[-1]
+
+
+def add_filename_metadata_columns(summary_df, file_name, include_source_file=False):
+    model_name, method = extract_model_method_from_filename(file_name)
+    summary_df = summary_df.copy()
+    if include_source_file:
+        summary_df.insert(0, "source_file", file_name)
+    summary_df.insert(0, "Method", method)
+    summary_df.insert(0, "Model name", model_name)
+    return summary_df
+
+
 def export_human_readable_summary(
     df, input_path, metric_col="all", turn_weight_scheme=None, reverse=False
 ):
@@ -476,6 +511,7 @@ def export_human_readable_summary(
         turn_weight_scheme=turn_weight_scheme,
         reverse=reverse,
     )
+    summary_df = add_filename_metadata_columns(summary_df, Path(input_path).name)
     summary_df = format_summary_df_for_export(summary_df)
     summary_df.to_csv(output_path, sep="\t", index=False)
     return output_path
@@ -502,7 +538,11 @@ def export_directory_human_readable_summary(
             turn_weight_scheme=turn_weight_scheme,
             reverse=reverse,
         )
-        summary_df.insert(0, "source_file", input_file.name)
+        summary_df = add_filename_metadata_columns(
+            summary_df,
+            input_file.name,
+            include_source_file=True,
+        )
         summary_frames.append(summary_df)
         processed_files.append(input_file.name)
 
@@ -533,7 +573,7 @@ def format_summary_value(value):
 def format_summary_df_for_export(summary_df):
     formatted_df = summary_df.copy()
     for column in formatted_df.columns:
-        if column in {"source_file", "turn"}:
+        if column in {"Model name", "Method", "source_file", "turn"}:
             continue
         formatted_df[column] = formatted_df[column].apply(format_summary_value)
     return formatted_df

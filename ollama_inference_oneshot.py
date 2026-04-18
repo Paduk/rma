@@ -45,6 +45,7 @@ GLM_STOP_SEQUENCES = [
 PROFILE_STOP_SEQUENCES = {
     "glm-edge-4b": GLM_STOP_SEQUENCES,
 }
+SCHEMA_RESAMPLE_TEMPERATURES = [0.0, 0.2, 0.5]
 ONESHOT_SYSTEM_PROMPT = (
     "Given a conversation history, a query, and a list of available tools, "
     "first write rewrited_query. Use only the dialogue in reference_turn "
@@ -128,6 +129,17 @@ def parse_args():
         type=float,
         default=0.0,
         help="Sampling temperature for Ollama.",
+    )
+    parser.add_argument(
+        "--schema_resample",
+        action="store_true",
+        help="Retry generation when the output is not a valid one-shot schema-conformant tool call.",
+    )
+    parser.add_argument(
+        "--max_resample_attempts",
+        type=int,
+        default=3,
+        help="Maximum attempts for --schema_resample. Attempts use temperatures 0.0, 0.2, 0.5.",
     )
     parser.add_argument(
         "--multi",
@@ -282,6 +294,18 @@ def parse_test_keys(test_key_arg, data_files):
 
 def build_data_files():
     return {
+        'humanvalid': [
+            'datasets/tc/human-eval/turn2.tsv',
+            'datasets/tc/human-eval/turn3.tsv',
+            'datasets/tc/human-eval/turn3_ref2.tsv',
+            'datasets/tc/human-eval/turn4.tsv',
+            'datasets/tc/human-eval/turn4_ref2.tsv',
+            'datasets/tc/human-eval/turn4_ref3.tsv',
+            'datasets/tc/human-eval/turn5.tsv',
+            'datasets/tc/human-eval/turn5_ref2.tsv',
+            'datasets/tc/human-eval/turn5_ref3.tsv',
+            'datasets/tc/human-eval/turn5_ref4.tsv',
+        ],
         "base": [
             "datasets/tc/scale/it2_nonNR_tc.tsv",
             "datasets/tc/scale/it3_nonNR_tc.tsv",
@@ -600,13 +624,19 @@ def extract_json_from_markdown(text):
         return None
 
 
-def parse_oneshot_response(raw_text: str, stop_markers=None):
+def parse_oneshot_payload(raw_text: str, stop_markers=None):
     parse_text = truncate_at_stop_markers(raw_text, stop_markers).strip()
     try:
         parsed = ast.literal_eval(parse_text)
     except Exception:
         parsed = extract_json_from_markdown(parse_text)
 
+    if not isinstance(parsed, dict):
+        raise ValueError("Parsed response is not a dict.")
+    return parsed
+
+
+def normalize_oneshot_response(parsed):
     if not isinstance(parsed, dict):
         raise ValueError("Parsed response is not a dict.")
 
@@ -620,6 +650,119 @@ def parse_oneshot_response(raw_text: str, stop_markers=None):
     return result
 
 
+def parse_oneshot_response(raw_text: str, stop_markers=None):
+    return normalize_oneshot_response(
+        parse_oneshot_payload(raw_text, stop_markers=stop_markers)
+    )
+
+
+def get_schema_argument_keys(api_schema, plan):
+    schema_entry = api_schema.get(plan)
+    if isinstance(schema_entry, list):
+        return set(schema_entry)
+    if isinstance(schema_entry, dict):
+        for field_name in ("arguments", "parameters"):
+            value = schema_entry.get(field_name)
+            if isinstance(value, dict):
+                return set(value.keys())
+            if isinstance(value, list):
+                return set(value)
+    return set()
+
+
+def is_oneshot_schema_valid(parsed, candidates, api_schema):
+    if not isinstance(parsed, dict):
+        return False
+
+    for key in ("rewrited_query", "plan", "arguments"):
+        if key not in parsed:
+            return False
+
+    rewrited_query = parsed.get("rewrited_query")
+    if not isinstance(rewrited_query, str) or not rewrited_query.strip():
+        return False
+
+    plan = parsed.get("plan")
+    if plan is None or plan == "None":
+        return False
+
+    try:
+        candidate_plans = parse_literal(candidates, "candidates")
+    except Exception:
+        return False
+
+    if plan not in candidate_plans:
+        return False
+    if plan not in api_schema:
+        return False
+
+    arguments = parsed.get("arguments")
+    if not isinstance(arguments, dict):
+        return False
+
+    allowed_keys = get_schema_argument_keys(api_schema, plan)
+    return set(arguments.keys()).issubset(allowed_keys)
+
+
+def get_generation_temperatures(temperature, schema_resample, max_resample_attempts):
+    if schema_resample:
+        return SCHEMA_RESAMPLE_TEMPERATURES[:max_resample_attempts]
+    return [temperature]
+
+
+def generate_with_optional_schema_resampling(
+    prompt,
+    model_name,
+    host,
+    temperature,
+    num_predict,
+    stop_markers,
+    candidates,
+    api_schema,
+    schema_resample,
+    max_resample_attempts,
+):
+    temperatures = get_generation_temperatures(
+        temperature=temperature,
+        schema_resample=schema_resample,
+        max_resample_attempts=max_resample_attempts,
+    )
+    raw = ""
+    result = {}
+    parse_error = ""
+    schema_valid = False
+    attempts = 0
+
+    for attempts, attempt_temperature in enumerate(temperatures, start=1):
+        raw = generate_text(
+            prompt=prompt,
+            model=model_name,
+            host=host,
+            temperature=attempt_temperature,
+            num_predict=num_predict,
+            stop=stop_markers,
+        )
+        try:
+            parsed = parse_oneshot_payload(raw, stop_markers=stop_markers)
+            result = normalize_oneshot_response(parsed)
+            parse_error = ""
+        except Exception as exc:
+            result = {"error": str(exc)}
+            parse_error = str(exc)
+            schema_valid = False
+        else:
+            schema_valid = is_oneshot_schema_valid(
+                parsed=parsed,
+                candidates=candidates,
+                api_schema=api_schema,
+            )
+
+        if schema_valid or not schema_resample:
+            break
+
+    return result, raw, parse_error, attempts, schema_valid
+
+
 def build_oneshot_result_row(
     test_key,
     example,
@@ -630,6 +773,8 @@ def build_oneshot_result_row(
     arg_res,
     all_res,
     file_name,
+    resample_attempts=0,
+    schema_valid=False,
 ):
     return {
         "test_key": test_key,
@@ -644,6 +789,8 @@ def build_oneshot_result_row(
         "plan": plan_res,
         "arguments": arg_res,
         "all": all_res,
+        "resample_attempts": resample_attempts,
+        "schema_valid": schema_valid,
         "file": file_name,
         "turn": extract_turn_from_filename(file_name),
     }
@@ -693,21 +840,31 @@ def evaluate_oneshot_example(
     temperature,
     num_predict,
     stop_markers,
+    api_schema,
+    schema_resample,
+    max_resample_attempts,
 ):
     raw = ""
     gt = {}
     error_info = None
+    resample_attempts = 0
+    schema_valid = False
 
     try:
-        raw = generate_text(
-            prompt=prompt,
-            model=model_name,
-            host=host,
-            temperature=temperature,
-            num_predict=num_predict,
-            stop=stop_markers,
+        result, raw, parse_error, resample_attempts, schema_valid = (
+            generate_with_optional_schema_resampling(
+                prompt=prompt,
+                model_name=model_name,
+                host=host,
+                temperature=temperature,
+                num_predict=num_predict,
+                stop_markers=stop_markers,
+                candidates=example.get("candidates"),
+                api_schema=api_schema,
+                schema_resample=schema_resample,
+                max_resample_attempts=max_resample_attempts,
+            )
         )
-        result = parse_oneshot_response(raw, stop_markers=stop_markers)
 
         gt = parse_literal(example["answer"], "answer")
         plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
@@ -737,6 +894,8 @@ def evaluate_oneshot_example(
         arg_res=arg_res,
         all_res=all_res,
         file_name=file_name,
+        resample_attempts=resample_attempts,
+        schema_valid=schema_valid,
     )
     return row_idx, row, error_info
 
@@ -745,6 +904,11 @@ def main():
     args = parse_args()
     if args.num_parallel < 1:
         raise ValueError("--multi/--num_parallel must be >= 1.")
+    if args.schema_resample and not 1 <= args.max_resample_attempts <= len(SCHEMA_RESAMPLE_TEMPERATURES):
+        raise ValueError(
+            "--max_resample_attempts must be between 1 and "
+            f"{len(SCHEMA_RESAMPLE_TEMPERATURES)} when --schema_resample is set."
+        )
 
     apis = read_simple_apis(Path(args.tools_path))
     if not args.profile and args.model_name:
@@ -765,6 +929,12 @@ def main():
     print(f"test_keys: {test_keys}")
     if args.num_parallel > 1:
         print(f"num_parallel: {args.num_parallel}")
+    print(f"schema_resample: {args.schema_resample}")
+    if args.schema_resample:
+        print(
+            "schema_resample_temperatures: "
+            f"{SCHEMA_RESAMPLE_TEMPERATURES[:args.max_resample_attempts]}"
+        )
 
     all_results = []
     split_results = {key: [] for key in test_keys}
@@ -788,6 +958,8 @@ def main():
                     prompt = ""
                     raw = ""
                     gt = {}
+                    resample_attempts = 0
+                    schema_valid = False
 
                     try:
                         prompt = build_oneshot_prompt(
@@ -804,21 +976,25 @@ def main():
                             print()
                             printed_first_prompt = True
 
-                        raw = generate_text(
-                            prompt=prompt,
-                            model=model_name,
-                            host=args.host,
-                            temperature=args.temperature,
-                            num_predict=args.num_predict,
-                            stop=stop_markers,
+                        result, raw, parse_error, resample_attempts, schema_valid = (
+                            generate_with_optional_schema_resampling(
+                                prompt=prompt,
+                                model_name=model_name,
+                                host=args.host,
+                                temperature=args.temperature,
+                                num_predict=args.num_predict,
+                                stop_markers=stop_markers,
+                                candidates=example.get("candidates"),
+                                api_schema=apis,
+                                schema_resample=args.schema_resample,
+                                max_resample_attempts=args.max_resample_attempts,
+                            )
                         )
                         if not printed_first_raw:
                             print("first_inference_raw:")
                             print(raw)
                             print()
                             printed_first_raw = True
-
-                        result = parse_oneshot_response(raw, stop_markers=stop_markers)
 
                         gt = parse_literal(example["answer"], "answer")
                         plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
@@ -858,6 +1034,8 @@ def main():
                         "plan": plan_res,
                         "arguments": arg_res,
                         "all": all_res,
+                        "resample_attempts": resample_attempts,
+                        "schema_valid": schema_valid,
                         "file": file_path.name,
                         "turn": extract_turn_from_filename(file_path.name),
                     }
@@ -924,6 +1102,9 @@ def main():
                             args.temperature,
                             args.num_predict,
                             stop_markers,
+                            apis,
+                            args.schema_resample,
+                            args.max_resample_attempts,
                         )
                         for row_idx, example, prompt in prepared_examples
                     ]

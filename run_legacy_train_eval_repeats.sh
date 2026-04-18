@@ -14,6 +14,7 @@ GPU=""
 OLLAMA_HOST="127.0.0.1:11435"
 INFER_HOST=""
 TEST_KEY="base,complex"
+LLAMA_CPP_DIR=""
 RESULT_DIR=""
 OUTPUT_PREFIX=""
 EVAL_T=""
@@ -54,6 +55,8 @@ Options:
   --ollama_host HOST      Host used for ollama create. Default: 127.0.0.1:11435
   --infer_host URL        Host URL used by inference. Default: http://<ollama_host>
   --test_key KEYS         Comma-separated eval keys. Default: base,complex
+  --llama_cpp_dir DIR     llama.cpp dir used for GGUF conversion.
+                          Default for smollm3: /home/hj153lee/llama.cpp-smollm3
   --result_dir DIR        Eval output dir. Default: datasets/result/<profile group>
   --output_prefix PREFIX  Eval filename prefix. Default: <group>-new-base for history
   --eval_t TYPE           Override ollama_inference_multi.py --t value.
@@ -85,6 +88,8 @@ while [[ $# -gt 0 ]]; do
       INFER_HOST="$2"; shift 2 ;;
     --test_key)
       TEST_KEY="$2"; shift 2 ;;
+    --llama_cpp_dir)
+      LLAMA_CPP_DIR="$2"; shift 2 ;;
     --result_dir)
       RESULT_DIR="$2"; shift 2 ;;
     --output_prefix)
@@ -232,6 +237,12 @@ else
   EFFECTIVE_MODEL_NAME="$(default_model_name_for_profile "$PROFILE")"
 fi
 MODEL_SLUG="$(infer_model_slug "$EFFECTIVE_MODEL_NAME")"
+if [[ -z "$LLAMA_CPP_DIR" ]]; then
+  lower_model_name="${EFFECTIVE_MODEL_NAME,,}"
+  if [[ "$lower_model_name" == *"smollm3"* ]]; then
+    LLAMA_CPP_DIR="/home/hj153lee/llama.cpp-smollm3"
+  fi
+fi
 if [[ "$PROFILE" == "generic" ]]; then
   RESULT_GROUP="$MODEL_SLUG"
 else
@@ -283,6 +294,10 @@ for tag in "${tags[@]}"; do
     train_cmd+=(--model_name "$MODEL_NAME")
   fi
 
+  if [[ -n "$LLAMA_CPP_DIR" ]]; then
+    train_cmd+=(--llama_cpp_dir "$LLAMA_CPP_DIR")
+  fi
+
   eval_cmd=(python3 ollama_inference_multi.py
     --t "$eval_t"
     --model "${ollama_model_name}:latest"
@@ -302,6 +317,7 @@ for tag in "${tags[@]}"; do
   echo "ollama_model_name: ${ollama_model_name}:latest"
   echo "eval_t: $eval_t"
   echo "output: $output_path"
+  echo "llama_cpp_dir: ${LLAMA_CPP_DIR:-<train default>}"
 
   if [[ -n "$GPU" ]]; then
     run_cmd env "CUDA_VISIBLE_DEVICES=${GPU}" "${train_cmd[@]}"

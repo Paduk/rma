@@ -51,6 +51,8 @@ GLM_STOP_SEQUENCES = [
     "<|endoftext|>",
 ]
 
+SCHEMA_RESAMPLE_TEMPERATURES = [0.0, 0.2, 0.5]
+
 GENERIC_PROMPT_PROFILES = {
     "glm-edge-1.5b": {
         "prompt_model_name": "zai-org/glm-edge-1.5b-chat",
@@ -132,6 +134,17 @@ def get_arg_parse():
     parser.add_argument('--test_key', type=str, default="", help='')
     parser.add_argument('--host', type=str, default="http://localhost:11436", help='Ollama host URL')
     parser.add_argument('--temperature', type=float, default=0.0, help='Ollama sampling temperature')
+    parser.add_argument(
+        '--schema_resample',
+        action='store_true',
+        help='Retry generation when the output is not a valid candidate/schema-conformant tool call.',
+    )
+    parser.add_argument(
+        '--max_resample_attempts',
+        type=int,
+        default=3,
+        help='Maximum attempts for --schema_resample. Attempts use temperatures 0.0, 0.2, 0.5.',
+    )
     parser.add_argument(
         '--dry_run',
         action='store_true',
@@ -278,6 +291,70 @@ def extract_json_from_markdown(text):
         # print()
         # print(text)
         return None
+
+
+def parse_model_output(raw, stop_markers=None):
+    parse_source = truncate_at_stop_markers(raw, stop_markers)
+    try:
+        result = ast.literal_eval(parse_source)
+    except Exception as parse_exc:
+        result = extract_json_from_markdown(parse_source)
+        if result is None:
+            raise ValueError(f"Failed to parse model output: {parse_exc}") from parse_exc
+
+    if not isinstance(result, dict):
+        raise ValueError(f"Parsed model output is not a dict: {type(result).__name__}")
+    return result
+
+
+def parse_candidates_value(candidates):
+    if isinstance(candidates, list):
+        return candidates
+    if isinstance(candidates, str):
+        parsed = ast.literal_eval(candidates)
+        if isinstance(parsed, list):
+            return parsed
+    raise ValueError("candidates must be a list.")
+
+
+def get_schema_argument_keys(api_schema, plan):
+    schema_entry = api_schema.get(plan)
+    if isinstance(schema_entry, list):
+        return set(schema_entry)
+    if isinstance(schema_entry, dict):
+        for field_name in ("arguments", "parameters"):
+            value = schema_entry.get(field_name)
+            if isinstance(value, dict):
+                return set(value.keys())
+            if isinstance(value, list):
+                return set(value)
+    return set()
+
+
+def is_schema_valid(result, candidates, api_schema):
+    if not isinstance(result, dict):
+        return False
+
+    plan = result.get("plan")
+    if plan is None or plan == "None":
+        return False
+
+    try:
+        candidate_plans = parse_candidates_value(candidates)
+    except Exception:
+        return False
+
+    if plan not in candidate_plans:
+        return False
+    if plan not in api_schema:
+        return False
+
+    arguments = result.get("arguments")
+    if not isinstance(arguments, dict):
+        return False
+
+    allowed_keys = get_schema_argument_keys(api_schema, plan)
+    return set(arguments.keys()).issubset(allowed_keys)
 
 
 def sanitize_model_slug(model_name):
@@ -444,6 +521,142 @@ def generate_text(prompt, model='llama3-3b-it:latest', host='http://localhost:11
     else:
         raise Exception(f"API request failed: {response.text}")
 
+
+def get_generation_temperatures(temperature, schema_resample, max_resample_attempts):
+    if schema_resample:
+        return SCHEMA_RESAMPLE_TEMPERATURES[:max_resample_attempts]
+    return [temperature]
+
+
+def generate_with_optional_schema_resampling(
+    prompt,
+    model_name,
+    host,
+    stop,
+    temperature,
+    candidates,
+    api_schema,
+    schema_resample,
+    max_resample_attempts,
+):
+    temperatures = get_generation_temperatures(
+        temperature=temperature,
+        schema_resample=schema_resample,
+        max_resample_attempts=max_resample_attempts,
+    )
+    raw = ""
+    result = {}
+    parse_error = ""
+    schema_valid = False
+    attempts = 0
+
+    for attempts, attempt_temperature in enumerate(temperatures, start=1):
+        raw = generate_text(
+            prompt,
+            model=model_name,
+            host=host,
+            stop=stop,
+            temperature=attempt_temperature,
+        )
+        try:
+            result = parse_model_output(raw, stop_markers=stop)
+            parse_error = ""
+        except Exception as exc:
+            result = {"error": str(exc)}
+            parse_error = str(exc)
+            schema_valid = False
+        else:
+            schema_valid = is_schema_valid(result, candidates, api_schema)
+
+        if schema_valid or not schema_resample:
+            break
+
+    return result, raw, parse_error, attempts, schema_valid
+
+
+def parse_ground_truth(stranswer):
+    gt = ast.literal_eval(stranswer)
+    if type(gt) == str:
+        gt = ast.literal_eval(gt)
+    return gt
+
+
+def evaluate_example(
+    ex,
+    test_key,
+    file_name,
+    model_name,
+    host,
+    stop,
+    temperature,
+    api_schema,
+    schema_resample,
+    max_resample_attempts,
+):
+    prompt = ex["strprompt"]
+    raw = ""
+    gt = {}
+    parse_error = ""
+    error_message = None
+    result = {}
+    resample_attempts = 0
+    schema_valid = False
+
+    try:
+        result, raw, parse_error, resample_attempts, schema_valid = (
+            generate_with_optional_schema_resampling(
+                prompt=prompt,
+                model_name=model_name,
+                host=host,
+                stop=stop,
+                temperature=temperature,
+                candidates=ex.get("candidates"),
+                api_schema=api_schema,
+                schema_resample=schema_resample,
+                max_resample_attempts=max_resample_attempts,
+            )
+        )
+
+        gt = parse_ground_truth(ex["stranswer"])
+
+        plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
+        arg_res = "pass" if result.get("arguments") == gt.get("arguments") else "fail"
+        all_res = "pass" if plan_res == "pass" and arg_res == "pass" else "fail"
+    except Exception as e:
+        result = {"error": str(e)}
+        if not parse_error:
+            parse_error = str(e)
+        error_message = f"Error: {e}, {raw}"
+        plan_res = "fail"
+        arg_res = "fail"
+        all_res = "fail"
+
+    row = {
+        "test_key":             test_key,
+        "conversation_history": ex.get("conversation_history"),
+        "original_conversation_history": ex.get("original_conversation_history"),
+        "history_selection":    ex.get("history_selection"),
+        "selected_turn_ids":    ex.get("selected_turn_ids"),
+        "retrieval_scores":     ex.get("retrieval_scores"),
+        "original_turn_count":  ex.get("original_turn_count"),
+        "query":                ex.get("query"),
+        "rewrited_query":       ex.get("rewrited_query"),
+        "candidates":           ex.get("candidates"),
+        "raw_generation":       raw,
+        "generation":           result,
+        "parse_error":          parse_error,
+        "gt":                   gt,
+        "plan":                 plan_res,
+        "arguments":            arg_res,
+        "all":                  all_res,
+        "resample_attempts":    resample_attempts,
+        "schema_valid":         schema_valid,
+        "file":                 file_name,
+        "turn":                 extract_turn_from_filename(file_name)
+    }
+    return row, error_message
+
+
 def print_eval(df, title=None, test_type=None, detail=False):
     metrics = ("plan", "arguments", "all")
     # -- 헤더 출력 --
@@ -575,70 +788,31 @@ def parse_test_keys(test_key_arg, data_files):
     return deduped_test_keys
 
 
-def evaluate_multi_example(row_idx, ex, test_key, file_name, model_name, host, stop, temperature):
-    prompt = ex["strprompt"]
-    raw = ""
-    gt = {}
-    parse_error = ""
-    error_message = None
-
-    try:
-        raw = generate_text(
-            prompt,
-            model=model_name,
-            host=host,
-            stop=stop,
-            temperature=temperature,
-        )
-        parse_source = truncate_at_stop_markers(raw, stop)
-        try:
-            result = ast.literal_eval(parse_source)
-        except Exception as parse_exc:
-            result = extract_json_from_markdown(parse_source)
-            if result is None:
-                parse_error = str(parse_exc)
-                raise ValueError(f"Failed to parse model output: {parse_error}")
-
-        if not isinstance(result, dict):
-            raise ValueError(f"Parsed model output is not a dict: {type(result).__name__}")
-
-        gt = ast.literal_eval(ex["stranswer"])
-        if type(gt) == str:
-            gt = ast.literal_eval(gt)
-
-        plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
-        arg_res = "pass" if result.get("arguments") == gt.get("arguments") else "fail"
-        all_res = "pass" if plan_res == "pass" and arg_res == "pass" else "fail"
-    except Exception as e:
-        result = {"error": str(e)}
-        if not parse_error:
-            parse_error = str(e)
-        error_message = f"Error: {e}, {raw}"
-        plan_res = "fail"
-        arg_res = "fail"
-        all_res = "fail"
-
-    row = {
-        "test_key":             test_key,
-        "conversation_history": ex.get("conversation_history"),
-        "original_conversation_history": ex.get("original_conversation_history"),
-        "history_selection":    ex.get("history_selection"),
-        "selected_turn_ids":    ex.get("selected_turn_ids"),
-        "retrieval_scores":     ex.get("retrieval_scores"),
-        "original_turn_count":  ex.get("original_turn_count"),
-        "query":                ex.get("query"),
-        "rewrited_query":       ex.get("rewrited_query"),
-        "candidates":           ex.get("candidates"),
-        "raw_generation":       raw,
-        "generation":           result,
-        "parse_error":          parse_error,
-        "gt":                   gt,
-        "plan":                 plan_res,
-        "arguments":            arg_res,
-        "all":                  all_res,
-        "file":                 file_name,
-        "turn":                 extract_turn_from_filename(file_name)
-    }
+def evaluate_multi_example(
+    row_idx,
+    ex,
+    test_key,
+    file_name,
+    model_name,
+    host,
+    stop,
+    temperature,
+    api_schema,
+    schema_resample,
+    max_resample_attempts,
+):
+    row, error_message = evaluate_example(
+        ex=ex,
+        test_key=test_key,
+        file_name=file_name,
+        model_name=model_name,
+        host=host,
+        stop=stop,
+        temperature=temperature,
+        api_schema=api_schema,
+        schema_resample=schema_resample,
+        max_resample_attempts=max_resample_attempts,
+    )
     return row_idx, row, error_message
 
 
@@ -681,6 +855,11 @@ python3 /home/hj153lee/RMA/ollama_inference_multi.py \
 def main(out_file):      
     if args.num_parallel < 1:
         raise ValueError("--multi/--num_parallel must be >= 1.")
+    if args.schema_resample and not 1 <= args.max_resample_attempts <= len(SCHEMA_RESAMPLE_TEMPERATURES):
+        raise ValueError(
+            "--max_resample_attempts must be between 1 and "
+            f"{len(SCHEMA_RESAMPLE_TEMPERATURES)} when --schema_resample is set."
+        )
 
     try:
         from datasets import load_dataset
@@ -757,46 +936,46 @@ def main(out_file):
             "prompt_template": SFT_REWRITE_INFERENCE_QWEN25,
             "prompt_mode": "rewrite",
         },
-        "base-qwen2.5-base": {
-            "model_name": "qwen2.5-base:latest",
-            "prompt_template": ZERO_HISTORY_INFERENCE_QWEN25,
-            "prompt_mode": "base",
-        },
-        "rewrite-qwen2.5-base": {
-            "model_name": "qwen2.5-base:latest",
-            "prompt_template": ZERO_REWRITE_INFERENCE_QWEN25,
-            "prompt_mode": "rewrite",
-        },
-        "base-phi4-base": {
-            "model_name": "phi4-base:latest",
-            "prompt_template": ZERO_HISTORY_INFERENCE_PHI4,
-            "prompt_mode": "base",
-        },
-        "rewrite-phi4-base": {
-            "model_name": "phi4-base:latest",
-            "prompt_template": ZERO_REWRITE_INFERENCE_PHI4,
-            "prompt_mode": "rewrite",
-        },
-        "base-llama3-base": {
-            "model_name": "llama-base:latest",
-            "prompt_template": ZERO_HISTORY_INFERENCE_LLAMA,
-            "prompt_mode": "base",
-        },
-        "rewrite-llama3-base": {
-            "model_name": "llama-base:latest",
-            "prompt_template": ZERO_REWRITE_INFERENCE_LLAMA,
-            "prompt_mode": "rewrite",
-        },
-        "base-qwen3-base": {
-            "model_name": "qwen3-base:latest",
-            "prompt_template": ZERO_HISTORY_INFERENCE_QWEN3,
-            "prompt_mode": "base",
-        },
-        "rewrite-qwen3-base": {
-            "model_name": "qwen3-base:latest",
-            "prompt_template": ZERO_REWRITE_INFERENCE_QWEN3,
-            "prompt_mode": "rewrite",
-        },
+        # "base-qwen2.5-base": {
+        #     "model_name": "qwen2.5-base:latest",
+        #     "prompt_template": ZERO_HISTORY_INFERENCE_QWEN25,
+        #     "prompt_mode": "base",
+        # },
+        # "rewrite-qwen2.5-base": {
+        #     "model_name": "qwen2.5-base:latest",
+        #     "prompt_template": ZERO_REWRITE_INFERENCE_QWEN25,
+        #     "prompt_mode": "rewrite",
+        # },
+        # "base-phi4-base": {
+        #     "model_name": "phi4-base:latest",
+        #     "prompt_template": ZERO_HISTORY_INFERENCE_PHI4,
+        #     "prompt_mode": "base",
+        # },
+        # "rewrite-phi4-base": {
+        #     "model_name": "phi4-base:latest",
+        #     "prompt_template": ZERO_REWRITE_INFERENCE_PHI4,
+        #     "prompt_mode": "rewrite",
+        # },
+        # "base-llama3-base": {
+        #     "model_name": "llama-base:latest",
+        #     "prompt_template": ZERO_HISTORY_INFERENCE_LLAMA,
+        #     "prompt_mode": "base",
+        # },
+        # "rewrite-llama3-base": {
+        #     "model_name": "llama-base:latest",
+        #     "prompt_template": ZERO_REWRITE_INFERENCE_LLAMA,
+        #     "prompt_mode": "rewrite",
+        #},
+        # "base-qwen3-base": {
+        #     "model_name": "qwen3-base:latest",
+        #     "prompt_template": ZERO_HISTORY_INFERENCE_QWEN3,
+        #     "prompt_mode": "base",
+        # },
+        # "rewrite-qwen3-base": {
+        #     "model_name": "qwen3-base:latest",
+        #     "prompt_template": ZERO_REWRITE_INFERENCE_QWEN3,
+        #     "prompt_mode": "rewrite",
+        # },        
         "new-base-qwen3": {
             "model_name": "qwen3-qwen-history-all_linear:latest",
             "prompt_template": SFT_HISTORY_INFERENCE_QWEN3,
@@ -824,14 +1003,14 @@ def main(out_file):
         },
         "new-base-llama3": {
             "model_name": "llama3-llama-history-all_linear:latest",
-            "prompt_template": ZERO_HISTORY_INFERENCE_LLAMA,
+            "prompt_template": SFT_HISTORY_INFERENCE_LLAMA,
             "prompt_mode": "base",
         },
-        "new-base-qwen2.5": {
-            "model_name": "qwen25-qwen-history-all_linear:latest",
-            "prompt_template": ZERO_HISTORY_INFERENCE_QWEN25,
-            "prompt_mode": "base",
-        }                 
+        # "new-base-qwen2.5": {
+        #     "model_name": "qwen25-qwen-history-all_linear:latest",
+        #     "prompt_template": ZERO_HISTORY_INFERENCE_QWEN25,
+        #     "prompt_mode": "base",
+        # }                 
     }
     test_type_config.update(build_generic_test_type_configs())
 
@@ -890,15 +1069,19 @@ def main(out_file):
     '''
 
     data_files = {      
-        'swap': [
-            'datasets/tc/it2_nonNR_tc_swapped_backup.tsv',
-            'datasets/tc/it5_nonNR_tc_swapped_backup.tsv'
+        'humanvalid': [
+            'datasets/tc/human-eval/turn2.tsv',
+            'datasets/tc/human-eval/turn3.tsv',
+            'datasets/tc/human-eval/turn3_ref2.tsv',
+            'datasets/tc/human-eval/turn4.tsv',
+            'datasets/tc/human-eval/turn4_ref2.tsv',
+            'datasets/tc/human-eval/turn4_ref3.tsv',
+            'datasets/tc/human-eval/turn5.tsv',
+            'datasets/tc/human-eval/turn5_ref2.tsv',
+            'datasets/tc/human-eval/turn5_ref3.tsv',
+            'datasets/tc/human-eval/turn5_ref4.tsv',
         ],
-        'base': [                     
-            # 'datasets/tc/it2_nonNR_tc.tsv',
-            # 'datasets/tc/it3_nonNR_tc.tsv',
-            # 'datasets/tc/it4_nonNR_tc.tsv',
-            # 'datasets/tc/it5_nonNR_tc.tsv',      
+        'base': [                                      
             'datasets/tc/scale/it2_nonNR_tc.tsv',
             'datasets/tc/scale/it3_nonNR_tc.tsv',
             'datasets/tc/scale/it4_nonNR_tc.tsv',
@@ -971,6 +1154,12 @@ def main(out_file):
     print(args.host)
     if args.num_parallel > 1:
         print(f"num_parallel: {args.num_parallel}")
+    print(f"schema_resample: {args.schema_resample}")
+    if args.schema_resample:
+        print(
+            "schema_resample_temperatures: "
+            f"{SCHEMA_RESAMPLE_TEMPERATURES[:args.max_resample_attempts]}"
+        )
     print(f"history_selection: {args.history_selection}")
     if args.history_selection != "full":
         print(
@@ -1088,69 +1277,20 @@ def main(out_file):
                 for row_idx, ex in enumerate(
                     tqdm(proc, desc=f"Processing {test_key}/{os.path.basename(file_path)}")
                 ):
-                    prompt = ex["strprompt"]
-                    raw = ""
-                    gt = {}
-                    parse_error = ""
-
-                    try:
-                        raw = generate_text(
-                            prompt,
-                            model=model_name,
-                            host=args.host,
-                            stop=config.get("stop"),
-                            temperature=args.temperature,
-                        )
-                        parse_source = truncate_at_stop_markers(raw, config.get("stop"))
-                        #result = ast.literal_eval(raw)
-                        try:
-                            result = ast.literal_eval(parse_source)
-                        except Exception as parse_exc:
-                            result = extract_json_from_markdown(parse_source)
-                            if result is None:
-                                parse_error = str(parse_exc)
-                                raise ValueError(f"Failed to parse model output: {parse_error}")
-
-                        if not isinstance(result, dict):
-                            raise ValueError(f"Parsed model output is not a dict: {type(result).__name__}")
-
-                        gt = ast.literal_eval(ex["stranswer"])
-                        if type(gt) == str:
-                            gt = ast.literal_eval(gt)
-
-                        plan_res = "pass" if result.get("plan") == gt.get("plan") else "fail"
-                        arg_res  = "pass" if result.get("arguments") == gt.get("arguments") else "fail"
-                        all_res  = "pass" if plan_res=="pass" and arg_res=="pass" else "fail"
-                    except Exception as e:
-                        result   = {"error": str(e)}
-                        if not parse_error:
-                            parse_error = str(e)
-                        print(f"Error: {e}, {raw}")
-                        plan_res = "fail"
-                        arg_res  = "fail"
-                        all_res  = "fail"
-
-                    row = {
-                        "test_key":             test_key,
-                        "conversation_history": ex.get("conversation_history"),
-                        "original_conversation_history": ex.get("original_conversation_history"),
-                        "history_selection":    ex.get("history_selection"),
-                        "selected_turn_ids":    ex.get("selected_turn_ids"),
-                        "retrieval_scores":     ex.get("retrieval_scores"),
-                        "original_turn_count":  ex.get("original_turn_count"),
-                        "query":                ex.get("query"),
-                        "rewrited_query":       ex.get("rewrited_query"),
-                        "candidates":           ex.get("candidates"),
-                        "raw_generation":       raw,
-                        "generation":           result,
-                        "parse_error":          parse_error,
-                        "gt":                   gt,
-                        "plan":                 plan_res,
-                        "arguments":            arg_res,
-                        "all":                  all_res,
-                        "file":                 os.path.basename(file_path),
-                        "turn":                 extract_turn_from_filename(os.path.basename(file_path))
-                    }
+                    row, error_message = evaluate_example(
+                        ex=ex,
+                        test_key=test_key,
+                        file_name=os.path.basename(file_path),
+                        model_name=model_name,
+                        host=args.host,
+                        stop=config.get("stop"),
+                        temperature=args.temperature,
+                        api_schema=sft_apis,
+                        schema_resample=args.schema_resample,
+                        max_resample_attempts=args.max_resample_attempts,
+                    )
+                    if error_message:
+                        print(error_message)
                     file_results.append(row)
                     split_results[test_key].append(row)
             else:
@@ -1170,6 +1310,9 @@ def main(out_file):
                             args.host,
                             config.get("stop"),
                             args.temperature,
+                            sft_apis,
+                            args.schema_resample,
+                            args.max_resample_attempts,
                         )
                         for row_idx, ex in enumerate(proc)
                     ]
