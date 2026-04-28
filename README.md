@@ -1,4 +1,8 @@
-# RMA Paper153 Code Repository
+<p align="center">
+  <img src="assets/read_launcher_foreground.png" alt="READ" width="320" />
+</p>
+
+# Rewrite-Enhanced Autoregressive Decomposition (READ)
 
 This repository contains code for dataset generation, model training, inference, and evaluation for the RMA project. The most operationally important part of the repository is the multi-turn dataset generation pipeline built around `o4-mini`.
 
