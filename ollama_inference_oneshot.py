@@ -35,6 +35,7 @@ DEFAULT_MODEL_NAME = "qwen3-oneshot:latest"
 DEFAULT_PROMPT_TOKENIZER_NAME = None
 LLAMA_MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 ONESHOT_PROMPT_OPTION = "reference-turn"
+ONESHOT_ABLATION_PROMPT_OPTION = "reference-turn-ablation"
 GLM_STOP_SEQUENCES = [
     "<|observation|>",
     "<|system|>",
@@ -44,6 +45,11 @@ GLM_STOP_SEQUENCES = [
 ]
 PROFILE_STOP_SEQUENCES = {
     "glm-edge-4b": GLM_STOP_SEQUENCES,
+}
+PROFILE_OLLAMA_NAME_OVERRIDES = {
+    "qwen3-1.7b": "qwen3-1.7b",
+    "qwen3-0.6b": "qwen3-0.6b",
+    "llama3.2-1b": "llama3.2-1b",
 }
 SCHEMA_RESAMPLE_TEMPERATURES = [0.0, 0.2, 0.5]
 ONESHOT_SYSTEM_PROMPT = (
@@ -56,6 +62,18 @@ ONESHOT_SYSTEM_PROMPT = (
     "inferred from the rewrited_query. Return compact JSON only with keys "
     "\"rewrited_query\", \"plan\", and \"arguments\". Always include all three "
     "keys. The value of \"arguments\" must always be an object."
+)
+ONESHOT_ABLATION_SYSTEM_PROMPT = (
+    "Given a conversation history, a query, and a list of available tools, "
+    "select the most appropriate tool and generate its arguments from the "
+    "query together with only the dialogue in reference_turn from "
+    "conversation_history. Only use parameter values that are explicitly "
+    "stated or can be reasonably inferred from that selected reference "
+    "context and query. Then write rewrited_query by resolving ambiguous "
+    "pronouns or omitted references using only that selected reference "
+    "context and query. Return compact JSON with keys in this exact order: "
+    "\"plan\", \"arguments\", and \"rewrited_query\". Always include all "
+    "three keys. The value of \"arguments\" must always be an object."
 )
 """
 python3 /home/hj153lee/RMA/ollama_inference_oneshot.py \
@@ -107,6 +125,15 @@ def parse_args():
         choices=["simple", "error"],
         default="simple",
         help="Fallback for profile tokenizers without chat_template.",
+    )
+    parser.add_argument(
+        "--ablation_mode",
+        "--ablation-mode",
+        action="store_true",
+        help=(
+            "Use the ablation prompt that asks the model to generate plan, "
+            "arguments, then rewrited_query."
+        ),
     )
     parser.add_argument(
         "--test_key",
@@ -306,6 +333,23 @@ def build_data_files():
             'datasets/tc/human-eval/it5_complex_3_tc.tsv',
             'datasets/tc/human-eval/it5_nonNR_tc.tsv',
         ],
+        'extended': [   
+            "datasets/tc/scale/it2_nonNR_tc.tsv",
+            "datasets/tc/scale/it3_nonNR_tc.tsv",
+            "datasets/tc/scale/it4_nonNR_tc.tsv",
+            "datasets/tc/scale/it5_nonNR_tc.tsv",         
+            "datasets/tc/scale/it3_complex_1_tc.tsv",
+            "datasets/tc/scale/it4_complex_1_tc.tsv",
+            "datasets/tc/scale/it4_complex_2_tc.tsv",
+            "datasets/tc/scale/it5_complex_1_tc.tsv",
+            "datasets/tc/scale/it5_complex_2_tc.tsv",
+            "datasets/tc/scale/it5_complex_3_tc.tsv",
+            'datasets/tc/scale_turn6_refswap_backfill/it6_complex_1_tc.tsv',
+            'datasets/tc/scale_turn6_refswap_backfill/it6_complex_2_tc.tsv',
+            'datasets/tc/scale_turn6_refswap_backfill/it6_complex_3_tc.tsv',            
+            'datasets/tc/scale_turn6_refswap_backfill/it6_complex_4_tc.tsv',
+            'datasets/tc/scale_turn6_refswap_backfill/it6_nonNR_tc.tsv',
+        ],
         "base": [
             "datasets/tc/scale/it2_nonNR_tc.tsv",
             "datasets/tc/scale/it3_nonNR_tc.tsv",
@@ -364,12 +408,15 @@ def build_reference_turn(source_file, conversation_history):
     file_name = Path(str(source_file)).name
     lower_file_name = file_name.lower()
 
+    def format_reference_turn(reference_turn):
+        return f"turn {reference_turn}"
+
     complex_match = re.search(
         r"(?:^|_)complex(?:_history)?_(\d+)(?:_|\.|$)",
         lower_file_name,
     )
     if complex_match:
-        return f"turn {int(complex_match.group(1))}"
+        return format_reference_turn(int(complex_match.group(1)))
 
     if "nonnr" in lower_file_name:
         turns = parse_conversation_history_turns(conversation_history)
@@ -380,7 +427,7 @@ def build_reference_turn(source_file, conversation_history):
             if not it_match:
                 return None
             reference_turn = max(int(it_match.group(1)) - 1, 1)
-        return f"turn {reference_turn}"
+        return format_reference_turn(reference_turn)
 
     return None
 
@@ -412,8 +459,17 @@ def infer_model_slug(model_name: str) -> str:
     return sanitized or "model"
 
 
-def infer_oneshot_ollama_model_name(prompt_model_name: str) -> str:
-    return f"{infer_model_slug(prompt_model_name)}-oneshot:latest"
+def infer_oneshot_ollama_model_name(
+    prompt_model_name: str,
+    profile_name: str | None = None,
+    ablation_mode: bool = False,
+) -> str:
+    suffix = "-ablation" if ablation_mode else ""
+    model_stem = PROFILE_OLLAMA_NAME_OVERRIDES.get(
+        profile_name,
+        infer_model_slug(prompt_model_name),
+    )
+    return f"{model_stem}-oneshot{suffix}:latest"
 
 
 def infer_profile_from_model_name(model_name: str | None) -> str | None:
@@ -461,7 +517,11 @@ def resolve_ollama_model_name(args, prompt_model_name: str) -> str:
     if args.model_name:
         return args.model_name
     if args.profile:
-        return infer_oneshot_ollama_model_name(prompt_model_name)
+        return infer_oneshot_ollama_model_name(
+            prompt_model_name,
+            profile_name=args.profile,
+            ablation_mode=args.ablation_mode,
+        )
     return DEFAULT_MODEL_NAME
 
 
@@ -494,7 +554,13 @@ def build_llama_prompts(
     query: str,
     target_json: str,
     reference_turn: str | None = None,
+    ablation_mode: bool = False,
 ):
+    system_prompt = (
+        ONESHOT_ABLATION_SYSTEM_PROMPT
+        if ablation_mode
+        else ONESHOT_SYSTEM_PROMPT
+    )
     user_payload = build_user_content(
         conversation_history=conversation_history,
         query=query,
@@ -507,7 +573,7 @@ def build_llama_prompts(
     )
     prompt_prefix = (
         "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
-        f"{ONESHOT_SYSTEM_PROMPT}\n"
+        f"{system_prompt}\n"
         "<|eot_id|><|start_header_id|>user<|end_header_id|>\n"
         f"{user_content}\n"
         "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
@@ -547,6 +613,7 @@ def build_oneshot_prompt(
     prompt_model_name: str,
     chat_template_fallback: str,
     source_file: str | None = None,
+    ablation_mode: bool = False,
 ) -> str:
     candidates = parse_literal(example["candidates"], "candidates")
     api_str = "\n".join(f"{plan_name}: {apis[plan_name].copy()}" for plan_name in candidates)
@@ -561,15 +628,21 @@ def build_oneshot_prompt(
             query=example["query"],
             target_json="",
             reference_turn=reference_turn,
+            ablation_mode=ablation_mode,
         )
         return prompt_prefix
 
+    prompt_option = (
+        ONESHOT_ABLATION_PROMPT_OPTION
+        if ablation_mode
+        else ONESHOT_PROMPT_OPTION
+    )
     messages = build_oneshot_messages(
         conversation_history=example["conversation_history"],
         query=example["query"],
         candidates=candidates,
         apis=apis,
-        prompt_option=ONESHOT_PROMPT_OPTION,
+        prompt_option=prompt_option,
         reference_turn=reference_turn,
         user_content_format="json",
     )
@@ -911,6 +984,8 @@ def main():
         )
 
     apis = read_simple_apis(Path(args.tools_path))
+    if not args.ablation_mode and args.model_name and "ablation" in args.model_name.lower():
+        args.ablation_mode = True
     if not args.profile and args.model_name:
         args.profile = infer_profile_from_model_name(args.model_name)
     bootstrap_model_name = args.model_name or DEFAULT_MODEL_NAME
@@ -925,6 +1000,7 @@ def main():
     print(f"host: {args.host}")
     print(f"prompt_tokenizer_name: {prompt_model_name}")
     print(f"chat_template_fallback: {args.chat_template_fallback}")
+    print(f"ablation_mode: {args.ablation_mode}")
     print(f"stop_markers: {stop_markers}")
     print(f"test_keys: {test_keys}")
     if args.num_parallel > 1:
@@ -969,6 +1045,7 @@ def main():
                             prompt_model_name=prompt_model_name,
                             chat_template_fallback=args.chat_template_fallback,
                             source_file=file_path.name,
+                            ablation_mode=args.ablation_mode,
                         )
                         if not printed_first_prompt:
                             print("first_inference_prompt:")
@@ -1058,6 +1135,7 @@ def main():
                             prompt_model_name=prompt_model_name,
                             chat_template_fallback=args.chat_template_fallback,
                             source_file=file_path.name,
+                            ablation_mode=args.ablation_mode,
                         )
                         if not printed_first_prompt:
                             print("first_inference_prompt:")

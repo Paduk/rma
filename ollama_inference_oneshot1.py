@@ -52,6 +52,18 @@ ONESHOT_SYSTEM_PROMPT = (
     "keys. The value of \"arguments\" must always be an object. If no tool "
     "matches the request, set \"plan\" to \"None\" and \"arguments\" to {}."
 )
+ONESHOT_ABLATION_SYSTEM_PROMPT = (
+    "Given a conversation history, a user query, and a list of available tools, "
+    "select the most appropriate tool and generate its arguments from the "
+    "user query and conversation history. Only use parameter values that are "
+    "explicitly stated or can be reasonably inferred from the user query or "
+    "conversation history. Then write rewrited_query by resolving ambiguous "
+    "references using the conversation history. Return compact JSON with keys "
+    "in this exact order: "
+    "\"plan\", \"arguments\", and \"rewrited_query\". Always include all "
+    "three keys. The value of \"arguments\" must always be an object. If no "
+    "tool matches the request, set \"plan\" to \"None\" and \"arguments\" to {}."
+)
 """
 python3 /home/hj153lee/RMA/ollama_inference_oneshot.py \
 --model_name phi4-oneshot-e6:latest \
@@ -102,6 +114,15 @@ def parse_args():
         choices=["simple", "error"],
         default="simple",
         help="Fallback for profile tokenizers without chat_template.",
+    )
+    parser.add_argument(
+        "--ablation_mode",
+        "--ablation-mode",
+        action="store_true",
+        help=(
+            "Use the ablation prompt that asks the model to generate plan, "
+            "arguments, then rewrited_query."
+        ),
     )
     parser.add_argument(
         "--test_key",
@@ -334,8 +355,12 @@ def infer_model_slug(model_name: str) -> str:
     return sanitized or "model"
 
 
-def infer_oneshot_ollama_model_name(prompt_model_name: str) -> str:
-    return f"{infer_model_slug(prompt_model_name)}-oneshot:latest"
+def infer_oneshot_ollama_model_name(
+    prompt_model_name: str,
+    ablation_mode: bool = False,
+) -> str:
+    suffix = "-ablation" if ablation_mode else ""
+    return f"{infer_model_slug(prompt_model_name)}-oneshot{suffix}:latest"
 
 
 def infer_profile_from_model_name(model_name: str | None) -> str | None:
@@ -383,7 +408,10 @@ def resolve_ollama_model_name(args, prompt_model_name: str) -> str:
     if args.model_name:
         return args.model_name
     if args.profile:
-        return infer_oneshot_ollama_model_name(prompt_model_name)
+        return infer_oneshot_ollama_model_name(
+            prompt_model_name,
+            ablation_mode=args.ablation_mode,
+        )
     return DEFAULT_MODEL_NAME
 
 
@@ -415,7 +443,13 @@ def build_llama_prompts(
     conversation_history: str,
     query: str,
     target_json: str,
+    ablation_mode: bool = False,
 ):
+    system_prompt = (
+        ONESHOT_ABLATION_SYSTEM_PROMPT
+        if ablation_mode
+        else ONESHOT_SYSTEM_PROMPT
+    )
     user_content = (
         f"Tools: {api_str}\n"
         f"Conversation History: {conversation_history}\n"
@@ -423,13 +457,32 @@ def build_llama_prompts(
     )
     prompt_prefix = (
         "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
-        f"{ONESHOT_SYSTEM_PROMPT}\n"
+        f"{system_prompt}\n"
         "<|eot_id|><|start_header_id|>user<|end_header_id|>\n"
         f"{user_content}\n"
         "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n"
     )
     prompt = f"{prompt_prefix}{target_json}<|eot_id|>\n"
     return prompt_prefix, prompt
+
+
+def build_ablation_messages(api_str: str, conversation_history: str, query: str):
+    return [
+        {
+            "role": "system",
+            "content": (
+                f"{ONESHOT_ABLATION_SYSTEM_PROMPT}\n"
+                f"<|tool|>{api_str}<|/tool|>"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Conversation History: {conversation_history}\n"
+                f"User Query: {query}"
+            ),
+        },
+    ]
 
 
 def render_model_messages(
@@ -463,6 +516,7 @@ def build_oneshot_prompt(
     prompt_model_name: str,
     chat_template_fallback: str,
     source_file: str | None = None,
+    ablation_mode: bool = False,
 ) -> str:
     candidates = parse_literal(example["candidates"], "candidates")
     api_str = "\n".join(f"{plan_name}: {apis[plan_name].copy()}" for plan_name in candidates)
@@ -472,15 +526,23 @@ def build_oneshot_prompt(
             conversation_history=example["conversation_history"],
             query=example["query"],
             target_json="",
+            ablation_mode=ablation_mode,
         )
         return prompt_prefix
 
-    messages = build_oneshot_messages(
-        conversation_history=example["conversation_history"],
-        query=example["query"],
-        candidates=candidates,
-        apis=apis,
-    )
+    if ablation_mode:
+        messages = build_ablation_messages(
+            api_str=api_str,
+            conversation_history=example["conversation_history"],
+            query=example["query"],
+        )
+    else:
+        messages = build_oneshot_messages(
+            conversation_history=example["conversation_history"],
+            query=example["query"],
+            candidates=candidates,
+            apis=apis,
+        )
     return render_model_messages(
         tokenizer=prompt_tokenizer,
         messages=messages,
@@ -679,6 +741,8 @@ def main():
         raise ValueError("--multi/--num_parallel must be >= 1.")
 
     apis = read_simple_apis(Path(args.tools_path))
+    if not args.ablation_mode and args.model_name and "ablation" in args.model_name.lower():
+        args.ablation_mode = True
     if not args.profile and args.model_name:
         args.profile = infer_profile_from_model_name(args.model_name)
     bootstrap_model_name = args.model_name or DEFAULT_MODEL_NAME
@@ -693,6 +757,7 @@ def main():
     print(f"host: {args.host}")
     print(f"prompt_tokenizer_name: {prompt_model_name}")
     print(f"chat_template_fallback: {args.chat_template_fallback}")
+    print(f"ablation_mode: {args.ablation_mode}")
     print(f"stop_markers: {stop_markers}")
     print(f"test_keys: {test_keys}")
     if args.num_parallel > 1:
@@ -729,6 +794,7 @@ def main():
                             prompt_model_name=prompt_model_name,
                             chat_template_fallback=args.chat_template_fallback,
                             source_file=file_path.name,
+                            ablation_mode=args.ablation_mode,
                         )
                         if not printed_first_prompt:
                             print("first_inference_prompt:")
@@ -812,6 +878,7 @@ def main():
                             prompt_model_name=prompt_model_name,
                             chat_template_fallback=args.chat_template_fallback,
                             source_file=file_path.name,
+                            ablation_mode=args.ablation_mode,
                         )
                         if not printed_first_prompt:
                             print("first_inference_prompt:")
